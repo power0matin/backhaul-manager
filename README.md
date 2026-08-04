@@ -73,8 +73,14 @@ sudo ./backhaul-manager.sh
 Or run it directly without saving the file:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
 ```
+
+> **Note:** avoid `sudo bash <(curl ...)`. On many systems `sudo` closes
+> inherited file descriptors before running the command, which breaks the
+> pipe that `<(...)` relies on and fails with `bash: /dev/fd/63: No such
+> file or directory`. The `curl | sudo bash` form above doesn't have this
+> problem.
 
 ## How It Works
 

@@ -70,8 +70,14 @@ sudo ./backhaul-manager.sh
 یا اجرای مستقیم بدون ذخیره‌ی فایل:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
 ```
+
+> **نکته:** از دستور `sudo bash <(curl ...)` استفاده نکنید. در بسیاری از
+> سیستم‌ها، `sudo` فایل‌دیسکریپتورهای به‌ارث‌رسیده را قبل از اجرای دستور
+> می‌بندد و همین باعث شکستن پایپ پشت `<(...)` می‌شود و خطای
+> `bash: /dev/fd/63: No such file or directory` می‌دهد. فرم `curl | sudo bash`
+> بالا این مشکل را ندارد.
 
 ## نحوه‌ی کار
 
