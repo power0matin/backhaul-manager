@@ -11,9 +11,10 @@
 #   Note: `sudo bash <(curl -fsSL ...)` (process substitution) can fail with
 #   "bash: /dev/fd/NN: No such file or directory" because sudo closes
 #   inherited file descriptors above stdio before exec'ing the command,
-#   which breaks the pipe backing <(...). Use command substitution instead:
+#   which breaks the pipe backing <(...). Use a pipe or download-then-run
+#   instead:
 #
-#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)"
+#   curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
 #
 #   or download first and run locally:
 #
@@ -34,6 +35,21 @@ ok()    { echo -e "${C_GREEN}[ OK ]${C_RESET} $*"; }
 warn()  { echo -e "${C_YELLOW}[ !! ]${C_RESET} $*"; }
 err()   { echo -e "${C_RED}[FAIL]${C_RESET} $*" >&2; }
 
+# Exit immediately and cleanly on Ctrl+C / termination, instead of only
+# interrupting whatever `read` happens to be running at that moment.
+on_interrupt() {
+  echo
+  err "Interrupted by user (Ctrl+C). Exiting."
+  exit 130
+}
+on_terminate() {
+  echo
+  err "Terminated."
+  exit 143
+}
+trap on_interrupt INT
+trap on_terminate TERM
+
 BACKHAUL_DIR="/opt/backhaul"
 CONFIG_DIR="/root/backhaul"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
@@ -44,7 +60,7 @@ LOG_FILE="/var/log/backhaul-manager-$(date +%Y%m%d%H%M%S).log"
 mkdir -p /var/log
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-trap 'err "اسکریپت در خط $LINENO با خطا متوقف شد. جزئیات کامل: $LOG_FILE"' ERR
+trap 'err "Script stopped due to an error at line $LINENO. Full details: $LOG_FILE"' ERR
 
 # reads from /dev/tty so prompts still work when piped via curl | bash
 tty_read() {
@@ -57,7 +73,7 @@ tty_read() {
 ask() {
   local prompt_text="$1" default_val="${2:-}" input
   if [[ -n "$default_val" ]]; then
-    input=$(tty_read "${prompt_text} ${C_YELLOW}[پیش‌فرض: ${default_val}]${C_RESET}: ")
+    input=$(tty_read "${prompt_text} ${C_YELLOW}[default: ${default_val}]${C_RESET}: ")
   else
     input=$(tty_read "${prompt_text}: ")
   fi
@@ -72,7 +88,7 @@ ask_required() {
       echo "$input"
       return
     fi
-    warn "این مقدار الزامی است، دوباره وارد کنید." >&2
+    warn "This value is required, please enter it again." >&2
   done
 }
 
@@ -87,14 +103,14 @@ ask_yn() {
 
 require_tty() {
   if [[ ! -r /dev/tty ]]; then
-    err "این اسکریپت تعاملی است و به یک ترمینال نیاز دارد. مستقیم روی SSH اجرا کنید."
+    err "This script is interactive and requires a terminal. Run it directly over SSH."
     exit 1
   fi
 }
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
-    err "این اسکریپت باید با دسترسی root اجرا شود. لطفاً با sudo اجرا کنید."
+    err "This script must be run as root. Please run it with sudo."
     exit 1
   fi
 }
@@ -106,12 +122,12 @@ check_dependencies() {
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
-    err "دستورهای زیر روی سیستم یافت نشد: ${missing[*]}"
-    info "نصب روی Debian/Ubuntu: apt update && apt install -y iproute2 curl tar gawk grep sed"
+    err "The following commands were not found on this system: ${missing[*]}"
+    info "Install on Debian/Ubuntu: apt update && apt install -y iproute2 curl tar gawk grep sed"
     exit 1
   fi
   if ! command -v nc >/dev/null 2>&1; then
-    warn "دستور nc پیدا نشد؛ تست اتصال کلاینت در پایان انجام نخواهد شد (نصب: apt install -y netcat-openbsd)"
+    warn "nc command not found; the client connectivity test at the end will be skipped (install: apt install -y netcat-openbsd)"
   fi
 }
 
@@ -129,7 +145,7 @@ detect_arch_asset() {
   case "$arch" in
     x86_64)          echo "backhaul_linux_amd64.tar.gz" ;;
     aarch64|arm64)   echo "backhaul_linux_arm64.tar.gz" ;;
-    *) err "معماری پشتیبانی‌نشده: $arch"; exit 1 ;;
+    *) err "Unsupported architecture: $arch"; exit 1 ;;
   esac
 }
 
@@ -146,13 +162,13 @@ download_backhaul() {
   mkdir -p "$BACKHAUL_DIR"
   cd "$BACKHAUL_DIR"
 
-  info "دانلود Backhaul (${version:-latest}) از: $url"
+  info "Downloading Backhaul (${version:-latest}) from: $url"
   curl -fsSL --retry 3 --retry-delay 2 -o backhaul.tar.gz "$url"
-  tar -tzf backhaul.tar.gz >/dev/null 2>&1 || { err "فایل دانلودشده معتبر نیست (tar corrupt)."; exit 1; }
+  tar -tzf backhaul.tar.gz >/dev/null 2>&1 || { err "Downloaded file is not valid (corrupt tar)."; exit 1; }
   tar -xzf backhaul.tar.gz
   chmod +x backhaul
   rm -f backhaul.tar.gz
-  ok "باینری Backhaul در ${BACKHAUL_DIR}/backhaul نصب شد"
+  ok "Backhaul binary installed at ${BACKHAUL_DIR}/backhaul"
 }
 
 backup_config_if_exists() {
@@ -160,7 +176,7 @@ backup_config_if_exists() {
     local bkp
     bkp="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     cp "$CONFIG_FILE" "$bkp"
-    info "کانفیگ قبلی بکاپ گرفته شد: $bkp"
+    info "Previous config was backed up: $bkp"
   fi
 }
 
@@ -184,13 +200,13 @@ EOF
 
 handle_old_services() {
   echo
-  echo "${C_BOLD}===== سرویس‌های در حال اجرا روی این سرور =====${C_RESET}"
+  echo "${C_BOLD}===== Currently running services on this server =====${C_RESET}"
 
   local -a RUNNING=()
   mapfile -t RUNNING < <(systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | awk '{print $1}')
 
   if [[ ${#RUNNING[@]} -eq 0 ]]; then
-    info "هیچ سرویس در حال اجرایی یافت نشد."
+    info "No running services found."
     return
   fi
 
@@ -200,21 +216,21 @@ handle_old_services() {
   for i in "${!RUNNING[@]}"; do
     svc="${RUNNING[$i]}"
     if echo "$svc" | grep -qiE "$keywords"; then
-      printf "  %2d) %s   ${C_YELLOW}<-- احتمالاً مرتبط با تونل${C_RESET}\n" "$((i + 1))" "$svc"
+      printf "  %2d) %s   ${C_YELLOW}<-- possibly tunnel-related${C_RESET}\n" "$((i + 1))" "$svc"
     else
       printf "  %2d) %s\n" "$((i + 1))" "$svc"
     fi
   done
 
   echo
-  echo "اگر سرویس(های) قدیمی (مثلاً تونل قبلی) را می‌خواهید متوقف و غیرفعال کنید،"
-  echo "شماره یا نام دقیق سرویس را وارد کنید. برای چند مورد از ',' استفاده کنید"
-  echo "(مثال: 2,paqet-client.service,5). برای رد شدن، فقط Enter بزنید."
+  echo "If you want to stop and disable old service(s) (e.g. a previous tunnel),"
+  echo "enter the number or exact service name. Use ',' to separate multiple items"
+  echo "(example: 2,paqet-client.service,5). Press Enter to skip."
   local sel
-  sel=$(tty_read "سرویس(های) موردنظر برای توقف: ")
+  sel=$(tty_read "Service(s) to stop: ")
 
   if [[ -z "$sel" ]]; then
-    info "هیچ سرویسی حذف نشد."
+    info "No services were removed."
     return
   fi
 
@@ -230,7 +246,7 @@ handle_old_services() {
       if [[ $idx -ge 0 && $idx -lt ${#RUNNING[@]} ]]; then
         name="${RUNNING[$idx]}"
       else
-        warn "شماره '$item' نامعتبر است، رد شد."
+        warn "Number '$item' is invalid, skipped."
         continue
       fi
     else
@@ -238,10 +254,10 @@ handle_old_services() {
       [[ "$name" != *.service ]] && name="${name}.service"
     fi
 
-    info "در حال متوقف و غیرفعال‌سازی: $name"
-    systemctl stop "$name" 2>/dev/null || warn "توقف $name ناموفق بود (شاید قبلاً متوقف بوده)"
+    info "Stopping and disabling: $name"
+    systemctl stop "$name" 2>/dev/null || warn "Failed to stop $name (it may already be stopped)"
     systemctl disable "$name" 2>/dev/null || true
-    ok "پردازش شد: $name"
+    ok "Processed: $name"
   done
 }
 
@@ -250,12 +266,12 @@ firewall_hint() {
   local ports_list="$1"
   local p
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "active"; then
-    warn "فایروال ufw فعال است. مطمئن شوید پورت‌های زیر باز هستند:"
+    warn "ufw firewall is active. Make sure the following ports are open:"
     for p in $ports_list; do
       echo "    ufw allow ${p}/tcp"
     done
   elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-    warn "فایروال firewalld فعال است. مطمئن شوید پورت‌های زیر باز هستند:"
+    warn "firewalld is active. Make sure the following ports are open:"
     for p in $ports_list; do
       echo "    firewall-cmd --add-port=${p}/tcp --permanent"
     done
@@ -269,11 +285,11 @@ start_and_verify_service() {
   systemctl restart backhaul.service
   sleep 2
 
-  echo "===== وضعیت سرویس ====="
+  echo "===== Service status ====="
   if systemctl is-active --quiet backhaul.service; then
-    ok "سرویس backhaul فعال است"
+    ok "backhaul service is active"
   else
-    err "سرویس backhaul بالا نیامد!"
+    err "backhaul service failed to start!"
     journalctl -u backhaul -n 30 --no-pager || true
     exit 1
   fi
@@ -281,25 +297,25 @@ start_and_verify_service() {
 
 configure_server() {
   echo
-  echo "${C_BOLD}===== پیکربندی سرور ایران (Server side) =====${C_RESET}"
+  echo "${C_BOLD}===== Iran Server Configuration (Server side) =====${C_RESET}"
 
   local control_port ports_raw version token token_input
 
-  control_port=$(ask "پورت کنترل بک‌هال" "8080")
-  ports_raw=$(ask "پورت‌های تونل (با , جدا کنید)" "2052,2082,8002,443")
+  control_port=$(ask "Backhaul control port" "8080")
+  ports_raw=$(ask "Tunnel ports (comma-separated)" "2052,2082,8002,443")
 
   echo
-  echo "برای توکن مشترک بین سرور و کلاینت می‌توانید یک مقدار دلخواه"
-  echo "وارد کنید، یا Enter بزنید تا یک توکن امن به‌صورت خودکار ساخته شود."
-  token_input=$(tty_read "توکن (Enter = تولید خودکار): ")
+  echo "For the shared token between server and client you can enter"
+  echo "a custom value, or press Enter to auto-generate a secure token."
+  token_input=$(tty_read "Token (Enter = auto-generate): ")
   if [[ -z "$token_input" ]]; then
     token="$(generate_token)"
-    ok "توکن امن تولید شد (در خلاصه‌ی پایانی نمایش داده می‌شود)"
+    ok "Secure token generated (shown in the final summary)"
   else
     token="$token_input"
   fi
 
-  version=$(ask "نسخه Backhaul (یا latest)" "latest")
+  version=$(ask "Backhaul version (or latest)" "latest")
 
   handle_old_services
 
@@ -335,18 +351,18 @@ ports = [
 ${ports_toml}]
 EOF
   chmod 600 "$CONFIG_FILE"
-  ok "کانفیگ نوشته شد: $CONFIG_FILE"
+  ok "Config written: $CONFIG_FILE"
 
   write_service_file
   start_and_verify_service
 
-  echo "===== بررسی پورت‌ها ====="
+  echo "===== Checking ports ====="
   local p
   for p in "${ports_arr[@]}" "${control_port}"; do
     if ss -tlnp 2>/dev/null | grep -q ":${p} "; then
-      ok "پورت $p در حال گوش دادن است"
+      ok "Port $p is listening"
     else
-      warn "پورت $p هنوز باز نیست (ممکن است چند ثانیه طول بکشد)"
+      warn "Port $p is not open yet (it may take a few seconds)"
     fi
   done
 
@@ -362,36 +378,36 @@ Token        : ${token}
 Config       : ${CONFIG_FILE}
 Service      : backhaul.service
 
-این مقادیر (به‌خصوص Token و IP این سرور) برای پیکربندی سمت
-کلاینت (سرور خارج) لازم است.
+These values (especially the Token and this server's IP) are needed
+for configuring the client side (foreign server).
 
-دستورات مفید:
+Useful commands:
   systemctl status backhaul
   journalctl -u backhaul -f
 EOF
   chmod 600 "$INFO_FILE"
 
   echo
-  echo "${C_BOLD}${C_GREEN}===== خلاصه پیکربندی =====${C_RESET}"
-  echo "  توکن          : ${token}"
-  echo "  پورت کنترل     : ${control_port}"
-  echo "  پورت‌های تونل   : ${ports_arr[*]}"
+  echo "${C_BOLD}${C_GREEN}===== Configuration Summary =====${C_RESET}"
+  echo "  Token         : ${token}"
+  echo "  Control Port  : ${control_port}"
+  echo "  Tunnel Ports  : ${ports_arr[*]}"
   echo
-  warn "این توکن را برای سمت کلاینت (سرور خارج) کپی کنید — در ${INFO_FILE} هم ذخیره شد."
+  warn "Copy this token for the client side (foreign server) — it was also saved in ${INFO_FILE}."
   echo
-  ok "تمام شد. لاگ زنده: journalctl -u backhaul -f"
+  ok "Done. Live log: journalctl -u backhaul -f"
 }
 
 configure_client() {
   echo
-  echo "${C_BOLD}===== پیکربندی سرور خارج (Client side) =====${C_RESET}"
+  echo "${C_BOLD}===== Foreign Server Configuration (Client side) =====${C_RESET}"
 
   local iran_ip control_port token version
 
-  iran_ip=$(ask_required "آی‌پی سرور ایران")
-  control_port=$(ask "پورت کنترل بک‌هال" "8080")
-  token=$(ask_required "توکن مشترک (دقیقاً مثل سمت سرور)")
-  version=$(ask "نسخه Backhaul (یا latest)" "latest")
+  iran_ip=$(ask_required "Iran server IP")
+  control_port=$(ask "Backhaul control port" "8080")
+  token=$(ask_required "Shared token (must match the server side exactly)")
+  version=$(ask "Backhaul version (or latest)" "latest")
 
   handle_old_services
 
@@ -420,17 +436,17 @@ web_port = 2061
 log_level = "info"
 EOF
   chmod 600 "$CONFIG_FILE"
-  ok "کانفیگ نوشته شد: $CONFIG_FILE"
+  ok "Config written: $CONFIG_FILE"
 
   write_service_file
   start_and_verify_service
 
   if command -v nc >/dev/null 2>&1; then
-    echo "===== تست اتصال به سرور ایران (${iran_ip}:${control_port}) ====="
+    echo "===== Testing connection to Iran server (${iran_ip}:${control_port}) ====="
     if nc -zv -w5 "${iran_ip}" "${control_port}" 2>&1; then
-      ok "اتصال برقرار است"
+      ok "Connection successful"
     else
-      warn "اتصال برقرار نشد — فایروال سمت ایران یا مسیر شبکه را بررسی کنید"
+      warn "Connection failed — check the firewall on the Iran side or the network path"
     fi
   fi
 
@@ -442,21 +458,21 @@ Iran Server  : ${iran_ip}:${control_port}
 Config       : ${CONFIG_FILE}
 Service      : backhaul.service
 
-دستورات مفید:
+Useful commands:
   systemctl status backhaul
   journalctl -u backhaul -f
 EOF
   chmod 600 "$INFO_FILE"
 
   echo
-  ok "تمام شد. لاگ زنده: journalctl -u backhaul -f"
+  ok "Done. Live log: journalctl -u backhaul -f"
 }
 
 uninstall_backhaul() {
   echo
-  warn "این کار سرویس backhaul، باینری و تمام فایل‌های کانفیگ را کاملاً حذف می‌کند."
-  if ! ask_yn "آیا مطمئن هستید؟" "n"; then
-    info "لغو شد."
+  warn "This will completely remove the backhaul service, binary, and all config files."
+  if ! ask_yn "Are you sure?" "n"; then
+    info "Cancelled."
     return
   fi
 
@@ -468,7 +484,7 @@ uninstall_backhaul() {
   rm -rf "$BACKHAUL_DIR"
   rm -rf "$CONFIG_DIR"
 
-  ok "Backhaul به‌طور کامل از این سرور حذف شد."
+  ok "Backhaul has been completely removed from this server."
 }
 
 banner() {
@@ -493,24 +509,24 @@ main() {
   check_dependencies
   banner
 
-  echo "این اسکریپت را برای چه کاری اجرا می‌کنید؟"
-  echo "  1) نصب/پیکربندی به عنوان سرور ${C_BOLD}ایران${C_RESET} (Server side)"
-  echo "  2) نصب/پیکربندی به عنوان سرور ${C_BOLD}خارج${C_RESET} (Client side)"
-  echo "  3) حذف کامل Backhaul از این سرور (Uninstall)"
-  echo "  0) خروج"
+  echo "What would you like to do with this script?"
+  echo "  1) Install/configure as the ${C_BOLD}Iran${C_RESET} server (Server side)"
+  echo "  2) Install/configure as the ${C_BOLD}foreign${C_RESET} server (Client side)"
+  echo "  3) Completely remove Backhaul from this server (Uninstall)"
+  echo "  0) Exit"
   local choice
-  choice=$(tty_read "انتخاب شما: ")
+  choice=$(tty_read "Your choice: ")
 
   case "$choice" in
     1) configure_server ;;
     2) configure_client ;;
     3) uninstall_backhaul ;;
-    0) info "خروج."; exit 0 ;;
-    *) err "گزینه نامعتبر."; exit 1 ;;
+    0) info "Exiting."; exit 0 ;;
+    *) err "Invalid option."; exit 1 ;;
   esac
 
   echo
-  info "لاگ کامل این اجرا: $LOG_FILE"
+  info "Full log of this run: $LOG_FILE"
 }
 
 main "$@"
