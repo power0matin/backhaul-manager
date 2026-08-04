@@ -8,7 +8,17 @@
 # License: MIT
 #
 # Usage:
-#   sudo bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+#   Note: `sudo bash <(curl -fsSL ...)` (process substitution) can fail with
+#   "bash: /dev/fd/NN: No such file or directory" because sudo closes
+#   inherited file descriptors above stdio before exec'ing the command,
+#   which breaks the pipe backing <(...). Use command substitution instead:
+#
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)"
+#
+#   or download first and run locally:
+#
+#   curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
+#   sudo bash backhaul-manager.sh
 
 set -Eeuo pipefail
 
