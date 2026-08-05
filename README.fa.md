@@ -2,14 +2,14 @@
 
 # Backhaul Manager
 
-**اسکریپت تعاملی نصب و مدیریت تانل معکوس [Backhaul](https://github.com/Musixal/Backhaul)**
-یک اسکریپت، هم برای سرور ایران، هم برای سرور خارج (کلاینت).
+**نصب و مدیریت امن و تعاملی [Musixal/Backhaul](https://github.com/Musixal/Backhaul)**
+
+یک اسکریپت برای هر دو سمت ایران و خارج، همراه با نصب، آپدیت، عیب‌یابی، لاگ، rollback و مدیریت سرویس.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Shell: Bash](https://img.shields.io/badge/shell-bash%205%2B-4EAA25?logo=gnu-bash&logoColor=white)](#پیش‌نیازها)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20systemd-lightgrey)](#پیش‌نیازها)
-[![Transport](https://img.shields.io/badge/transport-wsmux-informational)](#نقشه-راه)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#مشارکت)
+[![Shell: Bash](https://img.shields.io/badge/shell-bash%205%2B-4EAA25?logo=gnu-bash&logoColor=white)](#پیشنیازها)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20systemd-lightgrey)](#پیشنیازها)
+[![Transports](https://img.shields.io/badge/transports-7-informational)](#ترنسپورتها)
 
 [English](./README.md) • [فارسی](./README.fa.md)
 
@@ -17,49 +17,38 @@
 
 ---
 
-ابزار مدیریت تانل معکوس Backhaul، برای دیپلوی‌های Xray، V2Ray، Marzban، 3x-ui/Sanaei و Hiddify بین یک سرور ایران و یک ریلی خارج (kharej). نسخه‌ی فعلی از ترنسپورت **wsmux** پشتیبانی می‌کند؛ **tcp، tcpmux، ws و udp** در نقشه راه هستند.
-
-## فهرست مطالب
-
-- [چرا این ابزار](#چرا-این-ابزار)
-- [امکانات](#امکانات)
-- [پیش‌نیازها](#پیش‌نیازها)
-- [اجرای سریع](#اجرای-سریع)
-- [نحوه‌ی کار](#نحوه‌ی-کار)
-- [مرجع پیکربندی](#مرجع-پیکربندی)
-- [نقشه راه](#نقشه-راه)
-- [رفع اشکال](#رفع-اشکال)
-- [امنیت](#امنیت)
-- [پروژه‌های مرتبط](#پروژه‌های-مرتبط)
-- [مشارکت](#مشارکت)
-- [تاریخچه‌ی استار](#تاریخچه‌ی-استار)
-- [مجوز](#مجوز)
-
-## چرا این ابزار
-
-راه‌اندازی دستی Backhaul یعنی: SSH زدن به دو سرور جدا، ادیت دستی دو فایل `config.toml` متفاوت، هماهنگ نگه‌داشتن توکن مشترک، نوشتن یونیت systemd خودتان، به‌یاد‌آوردن این‌که یک تانل قدیمی (Paqet، GOST، Chisel و...) هنوز پورت را قبضه کرده، و امیدواری به این‌که آی‌پی را اشتباه تایپ نکرده باشید.
-
-**Backhaul Manager همه‌ی این‌ها را به یک اسکریپت و چند تا سؤال ساده تبدیل می‌کند** — همان ابزار، همان تجربه‌ی کاربری، در هر دو سمت تونل.
+Backhaul Manager برای تانل معکوس در کنار Xray، V2Ray، Marzban، 3x-ui/Sanaei، Hiddify و سرویس‌های مشابه طراحی شده است. هدف این نسخه این است که تنظیم دو سمت تانل سریع باشد، ولی خطاهای رایجی مثل TOML خراب، پورت نامعتبر، transport ناهماهنگ، نگهداری ناامن token، آپدیت ناقص و تنظیم دستی systemd اتفاق نیفتد.
 
 ## امکانات
 
-|                                 |                                                                                                                                                                                                                                                    |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🔁 **یک اسکریپت، هر دو نقش**    | انتخاب تعاملی نقش سرور ایران یا کلاینت خارج — بدون نیاز به دو اسکریپت جدا                                                                                                                                                                          |
-| ⌨️ **پیش‌فرض‌های معقول**        | برای هر سؤال یک مقدار پیش‌فرض کاربردی وجود دارد؛ Enter بزنید یا مقدار دلخواه بدهید                                                                                                                                                                 |
-| 🔐 **تولید خودکار توکن**        | توکن را در سمت سرور خالی بگذارید تا یک توکن ۴۰ کاراکتری امن به‌صورت خودکار ساخته شود                                                                                                                                                               |
-| 🧹 **پاک‌سازی تانل‌های قدیمی**  | سرویس‌های در حال اجرا را اسکن می‌کند، موارد مشکوک به تانل قدیمی (Paqet، GOST، Chisel، Rathole، wstunnel، frp، V2Ray/Xray، sing-box، Hysteria، WireGuard، OpenVPN، ngrok و...) را نشان می‌دهد و اجازه می‌دهد با شماره یا نام متوقف/غیرفعال‌شان کنید |
-| 💾 **ایمن به‌صورت پیش‌فرض**     | از کانفیگ قبلی قبل از overwrite بکاپ می‌گیرد، فایل دانلودشده را قبل از extract اعتبارسنجی می‌کند، و قبل از اعلام موفقیت واقعاً بالا آمدن سرویس را چک می‌کند                                                                                        |
-| 🔥 **آگاه از فایروال**          | فعال بودن `ufw`/`firewalld` را تشخیص می‌دهد و دستورات دقیق باز کردن پورت را نشان می‌دهد — هیچ‌وقت خودش فایروال را تغییر نمی‌دهد                                                                                                                    |
-| 📡 **سازگار با `curl \| bash`** | همه‌ی ورودی‌ها از `/dev/tty` خوانده می‌شود، پس اجرای مستقیم با پایپ از curl هم تعاملی کار می‌کند                                                                                                                                                   |
-| 🗑️ **حذف کامل داخلی**           | باینری، کانفیگ و یونیت systemd را با یک گزینه از منو تمیز پاک می‌کند                                                                                                                                                                               |
-| 📝 **لاگ کامل هر اجرا**         | هر اجرا در `/var/log/backhaul-manager-<تاریخ>.log` ثبت می‌شود                                                                                                                                                                                      |
+| قابلیت                                    | توضیح                                                                                                                               |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 🔁 **هر دو سمت با یک اسکریپت**            | همان فایل هم سرور ایران و هم کلاینت خارج را تنظیم می‌کند                                                                            |
+| 🚚 **تمام transportهای رسمی**             | `tcp`، `tcpmux`، `udp`، `ws`، `wss`، `wsmux` و `wssmux`؛ انتخاب پیشنهادی همچنان `wsmux` است                                         |
+| ✅ **اعتبارسنجی ورودی‌ها**                | پورت، نسخه، IP/hostname، transport و فایل‌های لازم قبل از هر تغییری بررسی می‌شوند                                                   |
+| 🔐 **مدیریت امن‌تر secret**               | token امن ۴۸ کاراکتری تولید می‌شود، ورودی token روی صفحه echo نمی‌شود، مقادیر TOML escape می‌شوند و token وارد run log نمی‌شود      |
+| 🛡️ **تغییرات تراکنشی**                    | قبل از تغییر از config/unit/binary بکاپ گرفته می‌شود؛ فایل‌ها atomic جایگزین می‌شوند و در صورت fail شدن سرویس rollback انجام می‌شود |
+| ⬆️ **آپدیت امن**                          | asset مناسب معماری دانلود و بررسی می‌شود، نسخه binary چک می‌شود و در صورت خراب شدن آپدیت، binary قبلی برمی‌گردد                     |
+| 🩺 **ابزار مدیریت روزمره**                | Status، Diagnostics، Start/Stop/Restart، لاگ اخیر، لاگ زنده و Upgrade داخل خود Manager هستند                                        |
+| 🧹 **پاک‌سازی کنترل‌شده سرویس‌های قدیمی** | فقط سرویس‌های مشکوک به ابزارهای تانل پیشنهاد می‌شوند و قبل از disable شدن تأیید جدا گرفته می‌شود                                    |
+| 🔥 **آگاه از فایروال**                    | `ufw` و `firewalld` را تشخیص می‌دهد و دستور لازم را نشان می‌دهد؛ خودش قانون فایروال را تغییر نمی‌دهد                                |
+| 🌐 **IPv4 / IPv6 / hostname**             | آدرس سرور ایران می‌تواند IPv4، IPv6 یا hostname باشد؛ transportهای WebSocket از edge/CDN اختیاری هم پشتیبانی می‌کنند                |
+| 🧯 **Uninstall امن‌تر**                   | ابتدا سرویس و binary حذف می‌شوند؛ حذف دائمی config، credential و backup تأیید جداگانه می‌خواهد                                      |
+| 🤖 **دستورات CLI**                        | کارهای مدیریتی رایج بدون باز کردن منوی تعاملی هم قابل اجرا هستند                                                                    |
 
 ## پیش‌نیازها
 
-توزیع لینوکسی مبتنی بر systemd (اوبونتو، دبیان، سنت‌اواس و...)، معماری `x86_64` یا `arm64`، دسترسی root، و ابزارهای `curl`، `tar`، `systemctl`، `ss` (از `iproute2`) — اسکریپت وجود این‌ها را چک می‌کند و کم‌بودشان را اعلام می‌کند. ابزار `nc` اختیاری است و فقط برای تست اتصال سمت کلاینت استفاده می‌شود.
+- لینوکس با `systemd`
+- Bash 5 یا جدیدتر
+- معماری `x86_64`/AMD64 یا `arm64`/AArch64
+- دسترسی root برای نصب و مدیریت سرویس
+- `curl`، `tar`، `systemctl`، `journalctl`، `ss`، `awk`، `grep`، `sed` و ابزارهای استاندارد GNU/coreutils
+- `nc`/netcat اختیاری است و فقط برای تست دسترسی سمت کلاینت استفاده می‌شود
+- برای `wss` و `wssmux` باید certificate و private key از قبل روی سرور وجود داشته باشند
 
 ## اجرای سریع
+
+روش پیشنهادی این است که اول فایل را دانلود کنید تا در صورت تمایل محتوای دقیق چیزی که با root اجرا می‌شود را ببینید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
@@ -67,123 +56,162 @@ chmod +x backhaul-manager.sh
 sudo ./backhaul-manager.sh
 ```
 
-یا اجرای مستقیم بدون ذخیره‌ی فایل:
+اجرای مستقیم هم به‌دلیل خواندن promptها از `/dev/tty` کار می‌کند:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
 ```
 
-> **نکته:** از دستور `sudo bash <(curl ...)` استفاده نکنید. در بسیاری از
-> سیستم‌ها، `sudo` فایل‌دیسکریپتورهای به‌ارث‌رسیده را قبل از اجرای دستور
-> می‌بندد و همین باعث شکستن پایپ پشت `<(...)` می‌شود و خطای
-> `bash: /dev/fd/63: No such file or directory` می‌دهد. فرم `curl | sudo bash`
-> بالا این مشکل را ندارد.
+> از `sudo bash <(curl ...)` استفاده نکنید؛ `sudo` ممکن است file descriptor مربوط به process substitution را ببندد و خطای `/dev/fd/...: No such file or directory` بدهد.
 
-## نحوه‌ی کار
+## منوی مدیریتی
 
-اسکریپت این منو را نشان می‌دهد:
-
+```text
+  1) Configure Iran server
+  2) Configure foreign client
+  3) Status
+  4) Diagnostics
+  5) Restart service
+  6) Start / stop service
+  7) Upgrade Backhaul
+  8) Recent logs
+  9) Follow live logs
+ 10) Uninstall / purge
+  0) Exit
 ```
-1) نصب/پیکربندی به عنوان سرور ایران (Server side)
-2) نصب/پیکربندی به عنوان سرور خارج (Client side)
-3) حذف کامل Backhaul از این سرور (Uninstall)
-0) خروج
+
+اجرای دوباره گزینه ۱ یا ۲ روی نصب فعلی امن است: قبل از تغییر snapshot گرفته می‌شود، فایل جدید به‌صورت atomic جایگزین می‌شود و اگر سرویس با تنظیم جدید بالا نیاید، وضعیت قبلی restore می‌شود.
+
+## ترنسپورت‌ها
+
+گزینه‌ها با transport typeهای فعلی خود Backhaul هماهنگ هستند:
+
+| Transport | کاربرد                                         | ورودی اضافه در سمت سرور   |
+| --------- | ---------------------------------------------- | ------------------------- |
+| `wsmux`   | WebSocket multiplex شده؛ انتخاب عمومی پیشنهادی | ندارد                     |
+| `tcpmux`  | TCP multiplex شده                              | ندارد                     |
+| `tcp`     | TCP ساده                                       | ندارد                     |
+| `ws`      | WebSocket                                      | ندارد                     |
+| `wssmux`  | WebSocket multiplex شده با TLS                 | certificate + private key |
+| `wss`     | WebSocket با TLS                               | certificate + private key |
+| `udp`     | UDP transport                                  | ندارد                     |
+
+در حال حاضر Manager لیست مستقیم پورت‌ها مثل `443,2052,2082` را می‌گیرد. ruleهای پیشرفته range/mapping که Backhaul پشتیبانی می‌کند همچنان می‌توانند مستقیماً در `config.toml` تنظیم شوند.
+
+برای `ws`، `wss`، `wsmux` و `wssmux` در سمت کلاینت می‌توانید مقدار اختیاری `edge_ip` را هم مشخص کنید.
+
+## دستورات مستقیم CLI
+
+برای کارهای روزمره لازم نیست وارد منو شوید:
+
+```bash
+sudo ./backhaul-manager.sh --status
+sudo ./backhaul-manager.sh --diagnose
+sudo ./backhaul-manager.sh --restart
+sudo ./backhaul-manager.sh --start
+sudo ./backhaul-manager.sh --stop
+sudo ./backhaul-manager.sh --upgrade
+sudo ./backhaul-manager.sh --upgrade v0.7.2
+sudo ./backhaul-manager.sh --logs 100
+sudo ./backhaul-manager.sh --follow-logs
+./backhaul-manager.sh --version
+./backhaul-manager.sh --help
 ```
 
-**گزینه‌ی ۱ — سرور ایران**: پورت کنترل، پورت‌های تونل، توکن مشترک (یا تولید خودکار) و نسخه‌ی Backhaul را می‌پرسد. سپس سرویس‌های در حال اجرا را لیست می‌کند تا تانل قدیمی را کنار بگذارید، Backhaul را دانلود می‌کند، `/root/backhaul/config.toml` را می‌نویسد، یونیت systemd را نصب می‌کند، سرویس را استارت می‌کند و باز بودن واقعی همه‌ی پورت‌ها را چک می‌کند.
+`--upgrade` به‌صورت پیش‌فرض آخرین release رسمی Backhaul را می‌گیرد. برای reproducible بودن می‌توانید tag دقیق نسخه را مشخص کنید.
 
-**گزینه‌ی ۲ — کلاینت/خارج**: آی‌پی سرور ایران، پورت کنترل، همان توکن مشترک، و نسخه‌ی Backhaul را می‌پرسد. سپس نصب و استارت می‌کند و یک تست اتصال به سرور ایران انجام می‌دهد.
+## فایل‌ها و بکاپ‌ها
 
-**گزینه‌ی ۳ — حذف کامل**: سرویس، باینری و کانفیگ را از هر سروری که روی آن اجرا شود، تمیز حذف می‌کند.
+| مسیر                                   | کاربرد                                 |
+| -------------------------------------- | -------------------------------------- |
+| `/opt/backhaul/backhaul`               | binary نصب‌شده Backhaul                |
+| `/root/backhaul/config.toml`           | کانفیگ فعال با permission برابر `0600` |
+| `/root/backhaul/backhaul-info.txt`     | خلاصه اطلاعات اتصال و setup با `0600`  |
+| `/etc/systemd/system/backhaul.service` | سرویس systemd                          |
+| `/var/lib/backhaul-manager/backups/`   | snapshotهای زمان‌دار برای rollback     |
+| `/var/log/backhaul-manager/`           | run logهای Manager با `0600`           |
 
-همه‌ی مقادیر تولیدشده (توکن، پورت‌ها، آی‌پی) در `/root/backhaul/backhaul-info.txt` (با `chmod 600`) هم ذخیره می‌شود تا لازم نباشد در ترمینال بالا و پایین بروید.
+Web dashboard خود Backhaul به‌صورت پیش‌فرض خاموش است (`web_port = 0`) تا سرویس اضافه‌ای ناخواسته روی شبکه expose نشود. اگر واقعاً نیاز دارید، آن را آگاهانه در config فعال کنید.
 
-## مرجع پیکربندی
+## مدل امنیت و پایداری
 
-مقادیری که اسکریپت در `config.toml` می‌نویسد و سؤالی که آن‌ها را کنترل می‌کند:
+- دایرکتوری‌های نصب قبل از نوشتن config ساخته می‌شوند؛ بنابراین نصب fresh به‌خاطر نبودن `/root/backhaul` fail نمی‌شود.
+- تولید token از pipelineای که با `set -o pipefail` و broken pipe مشکل ایجاد کند استفاده نمی‌کند.
+- token سفارشی بدون echo روی terminal گرفته و قبل از ذخیره برای TOML escape می‌شود.
+- token فقط روی TTY و داخل فایل‌های root-only نمایش/ذخیره می‌شود و وارد manager run log نمی‌شود.
+- دانلود release با HTTPS انجام می‌شود؛ ساختار gzip/tar بررسی، فقط عضو مورد انتظار `backhaul` extract، خروجی `-v` binary validate و برای نسخه pinned تطبیق tag بررسی می‌شود.
+- جایگزینی binary و config با temporary file و `mv` انجام می‌شود تا فایل نصفه نوشته نشود.
+- اگر configure/start fail شود، config، systemd unit، binary و وضعیت فعال/enabled قبلی تا حد ممکن restore می‌شوند.
+- Uninstall به‌صورت پیش‌فرض config و backup را نگه می‌دارد و purge کامل تأیید دوم می‌خواهد.
+- اسکریپت هیچ قانون فایروالی را خودکار تغییر نمی‌دهد.
 
-| فیلد                            | سمت      | سؤال می‌شود؟       | پیش‌فرض                         |
-| ------------------------------- | -------- | ------------------ | ------------------------------- |
-| `bind_addr` / `remote_addr`     | هر دو    | پورت کنترل + آی‌پی | `8080`                          |
-| `transport`                     | هر دو    | فعلاً ثابت         | `wsmux`                         |
-| `token`                         | هر دو    | بله                | تولید خودکار (سمت سرور)         |
-| `ports`                         | فقط سرور | بله                | `2052,2082,8002,443`            |
-| `keepalive_period`, `heartbeat` | هر دو    | خیر                | `20`                            |
-| `mux_con`                       | سرور     | خیر                | `8`                             |
-| `connection_pool`               | کلاینت   | خیر                | `8`                             |
-| `nodelay`                       | هر دو    | خیر                | `true`                          |
-| `web_port`                      | هر دو    | خیر                | `2060` (سرور) / `2061` (کلاینت) |
-| `log_level`                     | هر دو    | خیر                | `info`                          |
+## پیش‌فرض‌های کانفیگ
 
-مقادیری که به‌صورت سؤال پرسیده نمی‌شوند، پیش‌فرض‌های تنظیم‌شده برای اکثر سناریوها هستند؛ در صورت نیاز به fine-tune کردن اندازه‌ی mux/buffer، مستقیم `/root/backhaul/config.toml` را ادیت کنید.
+| تنظیم                | پیش‌فرض                        |
+| -------------------- | ------------------------------ |
+| Control port         | `8080`                         |
+| Tunnel ports         | `2052,2082,8002,443`           |
+| Transport            | `wsmux`                        |
+| `keepalive_period`   | `20` برای transportهای غیر UDP |
+| `heartbeat` سمت سرور | `20`                           |
+| `channel_size`       | `2048`                         |
+| `connection_pool`    | `8`                            |
+| `mux_con`            | `8` برای mux سمت سرور          |
+| `mux_version`        | `1` برای mux                   |
+| `web_port`           | `0` (خاموش)                    |
+| `log_level`          | `info`                         |
+
+در config کلاینت عمداً `heartbeat` نوشته نمی‌شود، چون `ClientConfig` فعلی Backhaul چنین فیلدی ندارد.
+
+## رفع مشکل
+
+اول health check داخلی را اجرا کنید:
+
+```bash
+sudo ./backhaul-manager.sh --diagnose
+```
+
+اگر لازم بود لاگ را ببینید:
+
+```bash
+sudo ./backhaul-manager.sh --logs 100
+sudo ./backhaul-manager.sh --follow-logs
+```
+
+موارد رایج:
+
+- control port در فایروال/security group سرور ایران بسته است؛
+- پردازش دیگری یکی از پورت‌های انتخابی را گرفته؛
+- token، transport یا control port در دو سمت یکی نیست؛
+- مسیر certificate/private key برای TLS اشتباه یا غیرقابل خواندن است؛
+- برای tag یا معماری انتخاب‌شده asset رسمی Backhaul وجود ندارد.
+
+## توسعه و تست
+
+```bash
+bash -n backhaul-manager.sh tests/test.sh
+shellcheck backhaul-manager.sh tests/test.sh
+bash tests/test.sh
+```
+
+GitHub Actions همین syntax check، ShellCheck و helper testها را روی push و pull request اجرا می‌کند.
 
 ## نقشه راه
 
-- [x] ترنسپورت `wsmux` (سرور + کلاینت)
-- [x] تولید خودکار توکن
-- [x] شناسایی و پاک‌سازی سرویس‌های قدیمی
-- [x] حذف کامل داخلی
-- [ ] ترنسپورت `tcp`
-- [ ] ترنسپورت `tcpmux`
-- [ ] ترنسپورت `ws` / `wss`
-- [ ] ترنسپورت `udp`
-- [ ] حالت غیرتعاملی (بر پایه‌ی فلگ) برای دیپلوی خودکار
-- [ ] پروفایل‌های چندگروهی پورت
-
-ترنسپورت یا قابلیتی نیاز دارید؟ یک [Issue](https://github.com/power0matin/backhaul-manager/issues) یا PR باز کنید.
-
-## رفع اشکال
-
-<details>
-<summary><strong>سرویس بالا نمی‌آید</strong></summary>
-
-لاگ زنده را چک کنید:
-
-```bash
-journalctl -u backhaul -n 50 --no-pager
-```
-
-علل رایج: یکی از پورت‌های تونل قبلاً توسط سرویس دیگری اشغال شده (اسکریپت را دوباره اجرا کنید و از مرحله‌ی پاک‌سازی سرویس قدیمی استفاده کنید)، یا توکن/آی‌پی بین دو سمت یکی نیست.
-
-</details>
-
-<details>
-<summary><strong>کلاینت به سرور ایران وصل نمی‌شود</strong></summary>
-
-- باز بودن پورت کنترل در فایروال سرور ایران را چک کنید (`ufw status` یا `firewall-cmd --list-ports`).
-- مطمئن شوید توکن در هر دو `config.toml` دقیقاً کاراکتر به کاراکتر یکی است.
-- تست اتصال اسکریپت را دوباره اجرا کنید، یا دستی: `nc -zv <iran-ip> <control-port>`.
-</details>
-
-<details>
-<summary><strong>پورت‌ها «هنوز باز نیست» نشان داده می‌شوند</strong></summary>
-
-بعد از restart، ممکن است چند ثانیه طول بکشد تا Backhaul همه‌ی پورت‌های کانفیگ‌شده را bind کند. دوباره چک کنید:
-
-```bash
-ss -tlnp | grep backhaul
-```
-
-</details>
-
-## امنیت
-
-- توکن با `chmod 600` هم در `config.toml` و هم در فایل info ذخیره می‌شود — با این حال، مثل یک پسورد با آن رفتار کنید.
-- این اسکریپت هیچ‌وقت خودش قوانین فایروال را تغییر نمی‌دهد؛ فقط دستورات لازم را چاپ می‌کند.
-- همیشه قبل از پایپ کردن یک اسکریپت به `sudo bash` — از جمله همین اسکریپت — محتوایش را مرور کنید.
-
-## پروژه‌های مرتبط
-
-ساخته و نگه‌داری‌شده توسط [power0matin](https://github.com/power0matin) در کنار سایر ابزارهای زیرساخت شبکه‌ی ایران/VPN — برای دیدن یک بات تلگرامی مدیریت ریسلر 3x-ui، یک ابزار بکاپ چندپنلی VPN و موارد دیگر، به [پروفایل گیت‌هاب](https://github.com/power0matin) سر بزنید.
+- [x] هر هفت transport فعلی Backhaul
+- [x] تولید امن token و محافظت از secret
+- [x] تغییرات transactional و rollback
+- [x] Status، Diagnostics، Log، Service control و Upgrade
+- [x] دستورات CLI مدیریتی
+- [x] تست خودکار syntax/lint/helper
+- [ ] پشتیبانی first-class از ruleهای پیشرفته range و port mapping
+- [ ] flagهای کاملاً non-interactive برای ساخت server/client
+- [ ] چند profile/service نام‌گذاری‌شده روی یک سرور
 
 ## مشارکت
 
-Issue و PR خوش‌آمدند — به‌خصوص برای ترنسپورت‌های ذکرشده در [نقشه راه](#نقشه-راه). برای تغییرات بزرگ‌تر، لطفاً ابتدا یک Issue باز کنید تا درباره‌ی روش پیاده‌سازی صحبت شود. تاریخچه‌ی نسخه‌ها در [CHANGELOG.md](./CHANGELOG.md) موجود است.
-
-## تاریخچه‌ی استار
-
-[![Star History Chart](https://api.star-history.com/svg?repos=power0matin/backhaul-manager&type=Date)](https://star-history.com/#power0matin/backhaul-manager&Date)
+Issue و Pull Request خوش‌آمدند. برای تغییرات بزرگ بهتر است اول Issue باز شود تا رفتار Manager با مدل config نسخه فعلی Backhaul هماهنگ بماند. تاریخچه تغییرات در [CHANGELOG.md](./CHANGELOG.md) است.
 
 ## مجوز
 
-MIT — فایل [LICENSE](./LICENSE) را ببینید.
+MIT — فایل [LICENSE](./LICENSE) را ببینید. خود Backhaul یک پروژه upstream جدا با مجوز خودش است.

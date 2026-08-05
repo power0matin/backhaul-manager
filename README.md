@@ -2,14 +2,14 @@
 
 # Backhaul Manager
 
-**Interactive installer & manager for [Backhaul](https://github.com/Musixal/Backhaul) reverse tunnels**
-One script for both the Iran-side server and the foreign (kharej) server.
+**Safe, interactive installer and operations manager for [Musixal/Backhaul](https://github.com/Musixal/Backhaul)**
+
+One script for both the Iran-side server and the foreign client, with install, upgrade, health checks, logs, rollback, and service management built in.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Shell: Bash](https://img.shields.io/badge/shell-bash%205%2B-4EAA25?logo=gnu-bash&logoColor=white)](#requirements)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20systemd-lightgrey)](#requirements)
-[![Transport](https://img.shields.io/badge/transport-wsmux-informational)](#roadmap)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+[![Transports](https://img.shields.io/badge/transports-7-informational)](#transports)
 
 [English](./README.md) • [فارسی](./README.fa.md)
 
@@ -17,52 +17,38 @@ One script for both the Iran-side server and the foreign (kharej) server.
 
 ---
 
-Backhaul reverse tunnel manager for Xray, V2Ray, Marzban, 3x-ui/Sanaei, and Hiddify deployments running between an Iran-side server and a foreign (kharej) relay. Supports the **wsmux** transport today, with **tcp, tcpmux, ws, and udp** on the roadmap.
-
-## Table of Contents
-
-- [Why](#why)
-- [Features](#features)
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-- [How It Works](#how-it-works)
-- [Configuration Reference](#configuration-reference)
-- [Roadmap](#roadmap)
-- [Troubleshooting](#troubleshooting)
-- [Security](#security)
-- [Related Projects](#related-projects)
-- [Contributing](#contributing)
-- [Star History](#star-history)
-- [License](#license)
-
-## Why
-
-Setting up Backhaul by hand means SSH-ing into two different servers, hand-editing two different `config.toml` files, keeping a shared token in sync, writing your own systemd unit, remembering to kill whatever old tunnel (Paqet, GOST, Chisel...) is still holding the port, and hoping you didn't typo the IP.
-
-**Backhaul Manager turns all of that into one script and a handful of prompts** — same tool, same UX, on either side of the tunnel.
+Backhaul Manager is designed for reverse-tunnel deployments used with Xray, V2Ray, Marzban, 3x-ui/Sanaei, Hiddify, and similar services. It keeps the two Backhaul roles consistent while avoiding the most common setup mistakes: malformed TOML, invalid ports, mismatched transport settings, unsafe secret handling, broken upgrades, and manual systemd work.
 
 ## Features
 
-|                               |                                                                                                                                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 🔁 **One script, both roles** | Interactively choose Iran/server or kharej/client mode — no separate scripts to keep in sync                                                                                                                             |
-| ⌨️ **Sensible defaults**      | Every prompt has a working default; press Enter to accept it, or type your own value                                                                                                                                     |
-| 🔐 **Auto-generated token**   | Leave the token prompt empty on the server side and a random 40-character token is generated for you                                                                                                                     |
-| 🧹 **Old-tunnel cleanup**     | Scans running `systemd` services, flags likely old tunnels (Paqet, GOST, Chisel, Rathole, wstunnel, frp, V2Ray/Xray, sing-box, Hysteria, WireGuard, OpenVPN, ngrok...), and lets you stop/disable them by number or name |
-| 💾 **Safe by default**        | Backs up any existing `config.toml` before overwriting, validates the downloaded archive before extracting, verifies the service actually started before declaring success                                               |
-| 🔥 **Firewall aware**         | Detects an active `ufw`/`firewalld` and prints the exact commands to open the ports it configured — never changes firewall rules on its own                                                                              |
-| 📡 **`curl \| bash` ready**   | All prompts read from `/dev/tty`, so piping the script straight from `curl` still works interactively                                                                                                                    |
-| 🗑️ **Built-in uninstall**     | Removes the binary, config, and systemd unit cleanly in one menu option                                                                                                                                                  |
-| 📝 **Full run log**           | Every execution is logged to `/var/log/backhaul-manager-<timestamp>.log`                                                                                                                                                 |
+| Feature                          | What it does                                                                                                                                        |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🔁 **Both roles**                | Configures either the Iran/server side or foreign/client side from the same script                                                                  |
+| 🚚 **All upstream transports**   | `tcp`, `tcpmux`, `udp`, `ws`, `wss`, `wsmux`, and `wssmux`; `wsmux` remains the recommended default                                                 |
+| ✅ **Validated input**           | Validates ports, versions, hosts, transport choices, required files, and rejects unsafe values before touching the installation                     |
+| 🔐 **Safer secrets**             | Generates a 48-character cryptographic token, hides token input, escapes TOML values, stores secrets as `0600`, and keeps the token out of run logs |
+| 🛡️ **Transactional changes**     | Backs up config/unit/binary state, writes files atomically, verifies the service, and rolls back after a failed install/reconfigure                 |
+| ⬆️ **Safe upgrades**             | Downloads the correct architecture, validates the archive and binary version, installs atomically, and rolls back a bad upgrade                     |
+| 🩺 **Operations toolkit**        | Status, diagnostics, start/stop/restart, recent logs, live logs, and upgrades are available without hand-written commands                           |
+| 🧹 **Targeted conflict cleanup** | Detects likely tunnel services and only allows selecting detected candidates, with a confirmation before disabling them                             |
+| 🔥 **Firewall aware**            | Detects active `ufw`/`firewalld` and prints the ports to allow; it never changes firewall policy itself                                             |
+| 🌐 **IPv4/IPv6/hostnames**       | Client endpoints accept IPv4, IPv6, or DNS names; WebSocket transports can optionally use an edge/CDN host                                          |
+| 🧯 **Safer uninstall**           | Removes the service/binary first and asks separately before permanently deleting config, credentials, and backups                                   |
+| 🤖 **CLI operations**            | Common maintenance actions can be called directly with flags, making routine administration faster                                                  |
 
 ## Requirements
 
-- A systemd-based Linux distribution (Ubuntu, Debian, CentOS, etc.), `x86_64` or `arm64`
-- Root access (`sudo`)
-- `curl`, `tar`, `systemctl`, `ss` (from `iproute2`) — the script checks for these and tells you what's missing
-- `nc` (netcat) — optional, only used for the client-side connectivity test
+- Linux with `systemd`
+- Bash 5+
+- `x86_64`/AMD64 or `arm64`/AArch64
+- Root access for install and service operations
+- `curl`, `tar`, `systemctl`, `journalctl`, `ss`, `awk`, `grep`, `sed`, and standard GNU/coreutils tools
+- `nc`/netcat is optional and is only used for client reachability probes
+- TLS transports (`wss`, `wssmux`) require an existing certificate and private key on the server side
 
 ## Quick Start
+
+Downloading first is the easiest way to review exactly what will run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
@@ -70,123 +56,166 @@ chmod +x backhaul-manager.sh
 sudo ./backhaul-manager.sh
 ```
 
-Or run it directly without saving the file:
+Direct interactive execution also works because prompts read from `/dev/tty`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
 ```
 
-> **Note:** avoid `sudo bash <(curl ...)`. On many systems `sudo` closes
-> inherited file descriptors before running the command, which breaks the
-> pipe that `<(...)` relies on and fails with `bash: /dev/fd/63: No such
-> file or directory`. The `curl | sudo bash` form above doesn't have this
-> problem.
+> Avoid `sudo bash <(curl ...)`. `sudo` may close the file descriptor backing process substitution, producing `/dev/fd/...: No such file or directory`. Use one of the forms above instead.
 
-## How It Works
+## Interactive Manager
 
-The script opens a menu:
-
+```text
+  1) Configure Iran server
+  2) Configure foreign client
+  3) Status
+  4) Diagnostics
+  5) Restart service
+  6) Start / stop service
+  7) Upgrade Backhaul
+  8) Recent logs
+  9) Follow live logs
+ 10) Uninstall / purge
+  0) Exit
 ```
-1) Install/configure as the Iran server (Server side)
-2) Install/configure as the kharej server (Client side)
-3) Fully remove Backhaul from this server (Uninstall)
-0) Exit
+
+Re-running option 1 or 2 is safe for an existing managed installation: previous files are snapshotted first, new files are written atomically, and a failed service start triggers rollback.
+
+## Transports
+
+The choices match the transport types currently exposed by Backhaul itself.
+
+| Transport | Use case                                    | Extra server input        |
+| --------- | ------------------------------------------- | ------------------------- |
+| `wsmux`   | Multiplexed WebSocket; good general default | none                      |
+| `tcpmux`  | Multiplexed TCP                             | none                      |
+| `tcp`     | Simple TCP transport                        | none                      |
+| `ws`      | WebSocket transport                         | none                      |
+| `wssmux`  | TLS-encrypted multiplexed WebSocket         | certificate + private key |
+| `wss`     | TLS-encrypted WebSocket                     | certificate + private key |
+| `udp`     | UDP transport                               | none                      |
+
+The manager currently accepts a list of direct tunnel ports such as `443,2052,2082`. Advanced Backhaul port-mapping/range rules can still be configured manually in `config.toml` if needed.
+
+For `ws`, `wss`, `wsmux`, and `wssmux`, the client can optionally set Backhaul's `edge_ip` value.
+
+## Direct CLI Operations
+
+The interactive menu is the default, but routine maintenance does not require it:
+
+```bash
+sudo ./backhaul-manager.sh --status
+sudo ./backhaul-manager.sh --diagnose
+sudo ./backhaul-manager.sh --restart
+sudo ./backhaul-manager.sh --start
+sudo ./backhaul-manager.sh --stop
+sudo ./backhaul-manager.sh --upgrade
+sudo ./backhaul-manager.sh --upgrade v0.7.2
+sudo ./backhaul-manager.sh --logs 100
+sudo ./backhaul-manager.sh --follow-logs
+./backhaul-manager.sh --version
+./backhaul-manager.sh --help
 ```
 
-**Option 1 — Iran server** asks for the control port, tunnel ports, a shared token (or auto-generates one), and the Backhaul version. It then lists running services so you can retire an old tunnel, downloads Backhaul, writes `/root/backhaul/config.toml`, installs the systemd unit, starts it, and verifies every configured port is actually listening.
+`--upgrade` defaults to the latest upstream Backhaul release. A pinned release tag may be supplied when reproducibility matters.
 
-**Option 2 — kharej/client** asks for the Iran server's IP, control port, the same shared token, and the Backhaul version. It installs, starts the service, and runs a connectivity test back to the Iran server.
+## Files and Backups
 
-**Option 3 — Uninstall** cleanly removes the service, binary, and config from whichever server you run it on.
+| Path                                   | Purpose                                 |
+| -------------------------------------- | --------------------------------------- |
+| `/opt/backhaul/backhaul`               | Installed Backhaul binary               |
+| `/root/backhaul/config.toml`           | Active Backhaul config (`0600`)         |
+| `/root/backhaul/backhaul-info.txt`     | Local connection/setup summary (`0600`) |
+| `/etc/systemd/system/backhaul.service` | Managed systemd unit                    |
+| `/var/lib/backhaul-manager/backups/`   | Timestamped rollback snapshots          |
+| `/var/log/backhaul-manager/`           | Per-run manager logs (`0600`)           |
 
-All generated values (token, ports, IP) are also saved to `/root/backhaul/backhaul-info.txt` (`chmod 600`) so you don't have to scroll back through the terminal.
+The generated web dashboard is disabled by default (`web_port = 0`) to avoid unintentionally exposing another listening service. Enable it manually only when you need it and understand the exposure.
 
-## Configuration Reference
+## Safety Model
 
-Values the script writes into `config.toml`, with the prompts that control them:
+- Installation directories are created before config is written, so clean installs do not fail on a missing `/root/backhaul` directory.
+- Token generation avoids pipelines that can fail under `set -o pipefail`.
+- Custom tokens are entered without terminal echo and are TOML-escaped before being written.
+- The token is shown only on the terminal and in the root-only info/config files; it is not printed into the manager run log.
+- Release downloads use HTTPS, validate the gzip/tar structure, extract only the expected `backhaul` member, execute its `-v` sanity check, and verify pinned-version matches.
+- Binary replacement and config writes use temporary files plus `mv` instead of partially overwriting live files.
+- A failed configure/start restores the previous config, systemd unit, binary, service state, and enablement state where applicable.
+- Uninstall preserves config/backups unless a second purge confirmation is explicitly accepted.
+- Firewall rules are never modified automatically.
 
-| Field                           | Side        | Prompted?         | Default                           |
-| ------------------------------- | ----------- | ----------------- | --------------------------------- |
-| `bind_addr` / `remote_addr`     | both        | control port + IP | `8080`                            |
-| `transport`                     | both        | fixed for now     | `wsmux`                           |
-| `token`                         | both        | yes               | auto-generated (server)           |
-| `ports`                         | server only | yes               | `2052,2082,8002,443`              |
-| `keepalive_period`, `heartbeat` | both        | no                | `20`                              |
-| `mux_con`                       | server      | no                | `8`                               |
-| `connection_pool`               | client      | no                | `8`                               |
-| `nodelay`                       | both        | no                | `true`                            |
-| `web_port`                      | both        | no                | `2060` (server) / `2061` (client) |
-| `log_level`                     | both        | no                | `info`                            |
+## Configuration Defaults
 
-Values not exposed as prompts are tuned defaults suitable for most setups; edit `/root/backhaul/config.toml` directly if you need to fine-tune mux/buffer sizes.
+The manager uses conservative defaults close to the upstream Backhaul configuration model:
 
-## Roadmap
+| Setting            | Default                     |
+| ------------------ | --------------------------- |
+| Control port       | `8080`                      |
+| Tunnel ports       | `2052,2082,8002,443`        |
+| Transport          | `wsmux`                     |
+| `keepalive_period` | `20` (non-UDP)              |
+| Server `heartbeat` | `20`                        |
+| `channel_size`     | `2048`                      |
+| `connection_pool`  | `8`                         |
+| `mux_con`          | `8` (mux server transports) |
+| `mux_version`      | `1` (mux transports)        |
+| `web_port`         | `0` (disabled)              |
+| `log_level`        | `info`                      |
 
-- [x] `wsmux` transport (server + client)
-- [x] Auto token generation
-- [x] Old-service detection & cleanup
-- [x] Built-in uninstall
-- [ ] `tcp` transport
-- [ ] `tcpmux` transport
-- [ ] `ws` / `wss` transport
-- [ ] `udp` transport
-- [ ] Non-interactive / flag-driven mode for automated deployments
-- [ ] Multi-port-group profiles
-
-Have a transport or feature you need? [Open an issue](https://github.com/power0matin/backhaul-manager/issues) or a PR.
+Client configs intentionally do not write a `heartbeat` key because current Backhaul `ClientConfig` does not expose that field.
 
 ## Troubleshooting
 
-<details>
-<summary><strong>Service won't start</strong></summary>
-
-Check the live logs:
+Run the built-in health check first:
 
 ```bash
-journalctl -u backhaul -n 50 --no-pager
+sudo ./backhaul-manager.sh --diagnose
 ```
 
-Common causes: a port from `TUNNEL_PORTS` is already in use (rerun the script and use the old-service cleanup step), or the token/IP doesn't match between the two sides.
-
-</details>
-
-<details>
-<summary><strong>Client can't reach the Iran server</strong></summary>
-
-- Confirm the control port is open on the Iran server's firewall (`ufw status` / `firewall-cmd --list-ports`).
-- Confirm the token in both `config.toml` files matches exactly, character for character.
-- Re-run the script's connectivity test, or manually: `nc -zv <iran-ip> <control-port>`.
-</details>
-
-<details>
-<summary><strong>Ports show "not listening yet"</strong></summary>
-
-Backhaul can take a few seconds to bind all configured ports after a restart. Re-check with:
+Then inspect logs if needed:
 
 ```bash
-ss -tlnp | grep backhaul
+sudo ./backhaul-manager.sh --logs 100
+sudo ./backhaul-manager.sh --follow-logs
 ```
 
-</details>
+Common causes of a failed setup are:
 
-## Security
+- the Iran control port is blocked by a firewall/security group;
+- another process already owns a configured port;
+- the server and client use different tokens, transports, or control ports;
+- a TLS transport points to a missing/unreadable certificate or key;
+- the requested Backhaul release tag or architecture has no matching upstream asset.
 
-- The token is stored with `chmod 600` in both `config.toml` and the info file — still, treat it like a password.
-- This script never modifies firewall rules automatically; it only prints the commands you'd need.
-- Always review a script before piping it into `sudo bash`, including this one.
+## Development
 
-## Related Projects
+Local checks:
 
-Built and maintained by [power0matin](https://github.com/power0matin) alongside other Iran-network / VPN-infrastructure tooling — check the [profile](https://github.com/power0matin) for a Telegram-based 3x-ui reseller bot, a multi-panel VPN backup tool, and more.
+```bash
+bash -n backhaul-manager.sh tests/test.sh
+shellcheck backhaul-manager.sh tests/test.sh
+bash tests/test.sh
+```
+
+GitHub Actions runs the same syntax, ShellCheck, and helper-test checks for pushes and pull requests.
+
+## Roadmap
+
+- [x] All seven upstream Backhaul transports
+- [x] Safe token generation and secret handling
+- [x] Transactional config/binary changes with rollback
+- [x] Status, diagnostics, logs, service control, and upgrade commands
+- [x] CLI maintenance operations
+- [x] Automated syntax/lint/helper tests
+- [ ] First-class advanced port ranges and mapping rules
+- [ ] Fully unattended server/client configuration flags
+- [ ] Multiple named tunnel profiles/services on the same host
 
 ## Contributing
 
-Issues and PRs are welcome — especially for the transports listed in [Roadmap](#roadmap). Please open an issue first for larger changes so we can discuss the approach. See [CHANGELOG.md](./CHANGELOG.md) for release history.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=power0matin/backhaul-manager&type=Date)](https://star-history.com/#power0matin/backhaul-manager&Date)
+Issues and pull requests are welcome. For larger behavioral changes, opening an issue first helps keep the manager aligned with Backhaul's upstream configuration model. See [CHANGELOG.md](./CHANGELOG.md) for release history.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](./LICENSE). Backhaul itself is a separate upstream project with its own license.
