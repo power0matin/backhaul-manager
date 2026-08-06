@@ -48,21 +48,29 @@ Backhaul Manager is designed for reverse-tunnel deployments used with Xray, V2Ra
 
 ## Quick Start
 
-Downloading first is the easiest way to review exactly what will run:
+If you are logged in as `root`, run the manager with one command:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+```
+
+If you are not root, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
+```
+
+`-f` makes HTTP errors fail instead of being executed, `-sS` keeps normal output quiet while still showing errors, and `-L` follows GitHub redirects.
+
+> Do not prepend `sudo` to the process-substitution form (`sudo bash <(curl ...)`). `sudo` may close its `/dev/fd/...` descriptor. Use the pipe-to-sudo form above when privilege elevation is required.
+
+To review the script before running it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
 chmod +x backhaul-manager.sh
 sudo ./backhaul-manager.sh
 ```
-
-Direct interactive execution also works because prompts read from `/dev/tty`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
-```
-
-> Avoid `sudo bash <(curl ...)`. `sudo` may close the file descriptor backing process substitution, producing `/dev/fd/...: No such file or directory`. Use one of the forms above instead.
 
 ## Interactive Manager
 

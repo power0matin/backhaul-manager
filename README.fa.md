@@ -48,21 +48,29 @@ Backhaul Manager برای تانل معکوس در کنار Xray، V2Ray، Marzb
 
 ## اجرای سریع
 
-روش پیشنهادی این است که اول فایل را دانلود کنید تا در صورت تمایل محتوای دقیق چیزی که با root اجرا می‌شود را ببینید:
+اگر با کاربر `root` وارد سرور شده‌اید، فقط همین یک دستور کافی است:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+```
+
+اگر root نیستید:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
+```
+
+`-f` اجازه نمی‌دهد پاسخ HTTP ناموفق به Bash داده شود، `-sS` خروجی عادی curl را مخفی ولی خطا را نمایش می‌دهد و `-L` redirectهای GitHub را دنبال می‌کند.
+
+> `sudo` را مستقیم قبل از فرم process substitution نگذارید (`sudo bash <(curl ...)`)؛ ممکن است `/dev/fd/...` توسط sudo بسته شود. وقتی نیاز به sudo دارید از فرم pipe بالا استفاده کنید.
+
+برای بررسی فایل قبل از اجرا:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
 chmod +x backhaul-manager.sh
 sudo ./backhaul-manager.sh
 ```
-
-اجرای مستقیم هم به‌دلیل خواندن promptها از `/dev/tty` کار می‌کند:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
-```
-
-> از `sudo bash <(curl ...)` استفاده نکنید؛ `sudo` ممکن است file descriptor مربوط به process substitution را ببندد و خطای `/dev/fd/...: No such file or directory` بدهد.
 
 ## منوی مدیریتی
 
