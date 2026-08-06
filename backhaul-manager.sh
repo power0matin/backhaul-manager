@@ -188,6 +188,12 @@ pause_menu() {
   tty_read "Press Enter to return to the menu..." >/dev/null || true
 }
 
+clear_screen() {
+  # Write directly to the controlling terminal so screen-control sequences
+  # never pollute the persistent run log created by tee.
+  printf '\033[H\033[2J' > /dev/tty 2>/dev/null || true
+}
+
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -1103,9 +1109,14 @@ BANNER
 }
 
 interactive_menu() {
-  local choice
-  banner
+  local choice first_render=1
   while true; do
+    if (( first_render )); then
+      first_render=0
+    else
+      clear_screen
+    fi
+    banner
     printf '%bActions%b\n' "$C_BOLD" "$C_RESET"
     printf '  1) Configure Iran server\n'
     printf '  2) Configure foreign client\n'
@@ -1141,10 +1152,10 @@ interactive_menu() {
         pause_menu
         ;;
       8) show_logs 80 || true; pause_menu ;;
-      9) follow_logs || true ;;
+      9) follow_logs || true; pause_menu ;;
       10) uninstall_backhaul; pause_menu ;;
       0) info "Bye."; return 0 ;;
-      *) warn "Invalid choice." ;;
+      *) warn "Invalid choice."; pause_menu ;;
     esac
     printf '\n'
   done
