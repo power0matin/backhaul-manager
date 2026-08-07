@@ -33,10 +33,10 @@ Backhaul Manager برای تانل معکوس در کنار Xray، V2Ray، Marzb
 | 🔐 **مدیریت امن‌تر secret** | token امن ۴۸ کاراکتری تولید می‌شود، ورودی token روی صفحه echo نمی‌شود، مقادیر TOML escape می‌شوند و token وارد run log نمی‌شود |
 | 🛡️ **تغییرات تراکنشی** | قبل از تغییر از config/unit/binary بکاپ گرفته می‌شود؛ فایل‌ها atomic جایگزین می‌شوند و در صورت fail شدن سرویس rollback انجام می‌شود |
 | ⬆️ **آپدیت امن چند-Profile** | کل نصب قبل از Upgrade snapshot می‌شود، تمام Profileهای قبلاً فعال verify می‌شوند و در صورت خطا کل وضعیت rollback می‌شود |
-| 💾 **Backup و مهاجرت سرور** | بکاپ checksummed، import/export امن و مهاجرت SSH شامل Profileها، service state، binary، source و TLS قابل‌خواندن است |
-| 🩺 **Health و Metrics** | Status، Diagnostics، منابع systemd، restart counter، `/stats` امن PowerMatin و لاگ‌ها داخل Manager هستند |
+| 💾 **Backup و مهاجرت سرور** | Full Backup schema-2، import/export امن و مهاجرت SSH شامل Profileهای managed، legacy tunnelهای شناسایی‌شده، service state، binary/source و TLS است |
+| 🩺 **Health و Metrics** | Status و Diagnostics علاوه بر systemd، PID فعلی و سلامت واقعی tunnel (listener/control channel)، restart counter، `/stats` امن PowerMatin و log را بررسی می‌کنند |
+| 🔒 **عملیات تک‌نویسنده** | اجرای تعاملی/تغییردهنده با `flock` قفل می‌شود تا دو session هم‌زمان config، binary، backup یا systemd state مشترک را تغییر ندهند |
 | 🛠️ **دستور سراسری Manager** | Manager را با downgrade guard به‌صورت `backhaul-manager` در `/usr/local/sbin` نصب/آپدیت می‌کند |
-| 🧹 **پاک‌سازی کنترل‌شده سرویس‌های قدیمی** | فقط سرویس‌های مشکوک به ابزارهای تانل پیشنهاد می‌شوند و قبل از disable شدن تأیید جدا گرفته می‌شود |
 | 🔥 **آگاه از فایروال** | `ufw` و `firewalld` را تشخیص می‌دهد و دستور لازم را نشان می‌دهد؛ خودش قانون فایروال را تغییر نمی‌دهد |
 | 🌐 **IPv4 / IPv6 / hostname** | آدرس سرور ایران می‌تواند IPv4، IPv6 یا hostname باشد؛ transportهای WebSocket از edge/CDN اختیاری هم پشتیبانی می‌کنند |
 | 🧯 **Uninstall امن‌تر** | ابتدا سرویس و binary حذف می‌شوند؛ حذف دائمی config، credential و backup تأیید جداگانه می‌خواهد |
@@ -48,7 +48,7 @@ Backhaul Manager برای تانل معکوس در کنار Xray، V2Ray، Marzb
 - Bash 5 یا جدیدتر
 - معماری `x86_64`/AMD64 یا `arm64`/AArch64
 - دسترسی root برای نصب و مدیریت سرویس
-- `curl`، `tar`، `systemctl`، `journalctl`، `ss`، `awk`، `grep`، `sed` و ابزارهای استاندارد GNU/coreutils
+- `curl`، `tar`، `flock`، `systemctl`، `journalctl`، `ss`، `awk`، `grep`، `sed` و ابزارهای استاندارد GNU/coreutils
 - `nc`/netcat اختیاری است و فقط برای تست دسترسی سمت کلاینت استفاده می‌شود
 - `ssh` و `scp` اختیاری هستند و فقط برای مهاجرت مستقیم سروربه‌سرور لازم‌اند؛ port/key سفارشی SSH را در `~/.ssh/config` تنظیم کنید
 - `jq` اختیاری است و در صورت نصب، خروجی `/stats` نسخه PowerMatin را خواناتر نمایش می‌دهد
@@ -142,9 +142,9 @@ Manager فقط optionهایی را می‌نویسد که برای source انت
 - configهای قدیمی Backhaul در ریشه مثل `/root/backhaul/config-2087.toml` به‌صورت خودکار به‌عنوان **legacy tunnel** شناسایی و نمایش داده می‌شوند؛ TOML نامرتبط و backupهای timestampدار با الگوی `.bak.*` وارد لیست نمی‌شوند.
 - مرحله Discovery فقط خواندنی است و هیچ فایلی را تغییر نمی‌دهد. با **Profiles → Adopt legacy tunnel** می‌توانید یک config شناسایی‌شده را با تأیید خودتان به Profile نام‌دار تبدیل کنید؛ اگر سرویس مرتبط پیدا شود وضعیت active/enabled آن حفظ می‌شود و در صورت verify نشدن سرویس جایگزین، عملیات rollback می‌شود. اگر سرویسی برای فایل پیدا نشود، فایل اصلی برای اطمینان نگه داشته می‌شود و Profile جدید تا زمان Start دستی متوقف می‌ماند.
 - علامت `*` فقط یعنی آن Profile برای عملیات Manager انتخاب شده است، نه اینکه تنها tunnel فعال باشد. هر Profile وضعیت سرویس خودش را به شکل `active`، `stopped`، `no-unit` یا `mismatch` نشان می‌دهد.
-- عملیات سرویس روی Profile دارای `mismatch` اجرا نمی‌شود و Upgrade/Migration/Uninstall باینری مشترک نیز تا وقتی یک legacy tunnel شناسایی‌شده خارج از Profile management فعال باشد متوقف می‌شود؛ در نتیجه Manager به‌اشتباه tunnel دیگری را restart یا replace نمی‌کند.
+- عملیات سرویس روی Profile دارای `mismatch` اجرا نمی‌شود. Upgrade/Migration/Restore/Uninstall باینری مشترک نیز تا وقتی **هر legacy tunnel شناسایی‌شده‌ای** خارج از Profile management باقی مانده باشد متوقف می‌شود؛ حتی اگر آن tunnel فعلاً stopped باشد. در نتیجه config مدیریت‌نشده روی binary/source دیگری جا نمی‌ماند.
 - از منوی Profiles می‌توانید Create، Select، Clone و Delete انجام دهید. هنگام clone یک Profile دارای TLS، cert/key داخل Profile جدید کپی می‌شود تا به Profile مبدا وابسته نماند.
-- Full Backup همه Profileها، active/enabled state سرویس‌ها، binary/source مشترک و TLS قابل‌خواندن را ذخیره می‌کند. هر snapshot قبل از اعلام موفقیت با checksum بررسی می‌شود و اعتبار rollback از compatibility مهاجرت جداست تا configهای legacy دارای keyهای نادیده‌گرفته‌شده نیز دقیقاً قابل بازیابی باشند.
+- Full Backup schema-2 همه Profileهای managed و **legacy tunnelهای root-level شناسایی‌شده**، active/enabled state، binary/source مشترک، unit قابل‌بازیابی و TLS قابل‌خواندن را ذخیره می‌کند. اگر TLS/unit ضروری کامل قابل capture نباشد بکاپ fail-closed می‌شود و snapshot ناقص هرگز موفق اعلام نمی‌شود.
 - Import فایل `.tar.gz` قبل از extract با دسترسی root، path traversal، link/device، تعداد بیش‌ازحد member، حجم فایل، حجم فشرده و حجم کل extract‌شده را محدود می‌کند. Bundle شامل secret است و امضای دیجیتال ندارد؛ فقط bundle مورد اعتماد خودتان را import کنید.
 - مهاجرت سروربه‌سرور همان bundle را روی SSH منتقل می‌کند، permission مقصد را `0600` می‌کند و در صورت تأیید restore را روی سرور مقصد اجرا می‌کند.
 - مهاجرت source همه Profileها را قبل از تغییر binary بررسی می‌کند. با تأیید صریح فقط keyهای شناخته‌شده و امنِ fork-specific یا legacy role-mismatch (مثل `heartbeat` سمت server که در config قدیمی client مانده) حذف می‌شوند؛ metrics ناامن Musixal نیز خاموش می‌شود. تغییرات همه Profileها قبل از commit ابتدا stage می‌شوند و Downgrade همیشه تأیید تعاملی جدا می‌خواهد.
@@ -163,6 +163,7 @@ sudo ./backhaul-manager.sh --start
 sudo ./backhaul-manager.sh --stop
 sudo ./backhaul-manager.sh --upgrade
 sudo ./backhaul-manager.sh --migrate-source Musixal/Backhaul
+sudo ./backhaul-manager.sh --set-source power0matin/Backhaul
 sudo ./backhaul-manager.sh --compat power0matin/Backhaul
 sudo ./backhaul-manager.sh --list-profiles
 sudo ./backhaul-manager.sh --select-profile edge-1
@@ -178,7 +179,7 @@ sudo ./backhaul-manager.sh --follow-logs
 ./backhaul-manager.sh --help
 ```
 
-`--upgrade` به‌صورت پیش‌فرض آخرین release همان source ذخیره‌شده را می‌گیرد و tag دقیق هم قابل استفاده است. `--migrate-source` در حالت non-interactive عمداً downgrade و config نیازمند adaptation را رد می‌کند؛ برای تأیید آگاهانه این دو مورد از Migration داخل منو استفاده کنید. نصب‌های قدیمی بدون source state به‌عنوان Musixal در نظر گرفته می‌شوند.
+`--upgrade` به‌صورت پیش‌فرض آخرین release source ثبت‌شده را می‌گیرد و در حالت non-interactive downgrade را رد می‌کند؛ tag دقیق هم قابل استفاده است. `--migrate-source` نیز downgrade و config نیازمند adaptation را بدون تأیید تعاملی رد می‌کند. اگر binary قدیمی source metadata نداشته باشد، Manager دیگر آن را Musixal حدس نمی‌زند و `unknown` نشان می‌دهد؛ قبل از maintenance وابسته به source، repository واقعی را از **Backhaul maintenance → Record current source** یا با `--set-source REPO` ثبت کنید.
 
 ## فایل‌ها و بکاپ‌ها
 
@@ -206,10 +207,12 @@ Web monitor در Standard Mode خاموش است (`web_port = 0`). در Advanced
 - token فقط روی TTY و داخل فایل‌های root-only نمایش/ذخیره می‌شود و وارد manager run log نمی‌شود.
 - دانلود release با HTTPS انجام می‌شود؛ ساختار gzip/tar بررسی، فقط عضو مورد انتظار `backhaul` extract، خروجی `-v` binary validate و برای نسخه pinned تطبیق tag بررسی می‌شود.
 - جایگزینی binary و config با temporary file و `mv` انجام می‌شود تا فایل نصفه نوشته نشود.
-- اگر configure/start fail شود، config، systemd unit، binary و وضعیت فعال/enabled قبلی تا حد ممکن restore می‌شوند.
-- Upgrade و source migration از کل Profileها snapshot می‌گیرند و فقط وقتی موفق اعلام می‌شوند که همه سرویس‌هایی که قبلاً active بودند دوباره verify شوند.
-- Portable restore ابتدا درخت backup و checksumها را validate می‌کند و systemd unit را از template خود Manager دوباره می‌سازد؛ unit داخل archive کورکورانه اجرا نمی‌شود.
+- عملیات تغییردهنده با `flock` تک‌نویسنده هستند؛ session دوم قبل از دست‌زدن به state مشترک متوقف می‌شود.
+- اگر configure/start fail شود، config، systemd unit، binary و وضعیت active/enabled قبلی restore می‌شوند و transaction فعال روی `SIGINT`/`SIGTERM` نیز rollback را تلاش می‌کند.
+- Upgrade و source migration ابتدا candidate/configها را stage می‌کنند، سرویس‌های فعال را فقط یک‌بار برای cutover متوقف می‌کنند و فقط بعد از verify شدن PID فعلی و سلامت tunnel موفق اعلام می‌شوند.
+- Portable restore ابتدا درخت backup/checksum را validate می‌کند و unit ذخیره‌شده‌ای را که ownership فرمان/config یا hook اجرایی ناامن داشته باشد رد می‌کند؛ unit داخل archive کورکورانه اجرا نمی‌شود.
 - Import قبل از extract با root، نوع member، مسیر، تعداد، اندازه هر فایل، حجم فشرده و مجموع حجم extract‌شده را محدود می‌کند.
+- در بررسی ownership سرویس، `ExecStart` مؤثر systemd (از جمله drop-in override) بر فایل static اولویت دارد و executable نیز باید خود Backhaul باشد؛ صرفاً یک `-c` مشابه کافی نیست.
 - Self-update فقط اسکریپت `main` همان repository را روی HTTPS می‌گیرد، حجم را محدود می‌کند، Bash syntax و یک version declaration معتبر را بررسی و downgrade را رد می‌کند. این مکانیزم امضای رمزنگاری‌شده مستقل ندارد.
 - Uninstall به‌صورت پیش‌فرض config و backup را نگه می‌دارد و purge کامل تأیید دوم می‌خواهد.
 - اسکریپت هیچ قانون فایروالی را خودکار تغییر نمی‌دهد.
@@ -266,7 +269,7 @@ shellcheck backhaul-manager.sh tests/test.sh
 bash tests/test.sh
 ```
 
-GitHub Actions همین syntax check، ShellCheck و helper testها را روی push و pull request اجرا می‌کند.
+GitHub Actions همین syntax check، ShellCheck و regression/failure-injection testها را روی push و pull request اجرا می‌کند.
 
 ## نقشه راه
 
@@ -275,7 +278,7 @@ GitHub Actions همین syntax check، ShellCheck و helper testها را روی
 - [x] تغییرات transactional و rollback
 - [x] Status، Diagnostics، Log، Service control و Upgrade
 - [x] دستورات CLI مدیریتی
-- [x] تست خودکار syntax/lint/helper
+- [x] تست خودکار syntax/lint/regression و failure-injection
 - [x] پشتیبانی first-class از ruleهای پیشرفته range و port mapping
 - [x] Standard/Advanced Mode همراه با Auto tuning منابع
 - [x] چند Profile/service نام‌گذاری‌شده روی یک سرور
