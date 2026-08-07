@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Backhaul Manager — safe installer and operations helper for Musixal/Backhaul.
+# Backhaul Manager — safe installer and operations helper for Backhaul.
 # Repository: https://github.com/power0matin/backhaul-manager
 # License: MIT
 
@@ -18,7 +18,10 @@ readonly SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 readonly STATE_DIR="/var/lib/backhaul-manager"
 readonly BACKUP_DIR="${STATE_DIR}/backups"
 readonly LOG_DIR="/var/log/backhaul-manager"
-readonly UPSTREAM_RELEASES="https://github.com/Musixal/Backhaul/releases"
+readonly BACKHAUL_SOURCE_FILE="${STATE_DIR}/backhaul-source"
+readonly POWERMATIN_BACKHAUL_REPO="power0matin/Backhaul"
+readonly MUSIXAL_BACKHAUL_REPO="Musixal/Backhaul"
+readonly DEFAULT_BACKHAUL_SOURCE="$POWERMATIN_BACKHAUL_REPO"
 
 LOG_FILE=""
 BINARY_BACKUP=""
@@ -78,6 +81,7 @@ Usage:
        ./backhaul-manager.sh --help          Show this help
 
 Backhaul versions may be "latest" or an upstream tag such as "v0.7.2".
+New interactive installations ask for a Backhaul source; power0matin/Backhaul is recommended.
 EOF
 }
 
@@ -244,6 +248,55 @@ ask_version() {
     fi
     warn "Use 'latest' or a release tag such as v0.7.2." >&2
   done
+}
+
+validate_backhaul_source() {
+  case "$1" in
+    "$POWERMATIN_BACKHAUL_REPO"|"$MUSIXAL_BACKHAUL_REPO") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+backhaul_release_base() {
+  local source_repo="$1"
+  validate_backhaul_source "$source_repo" || return 1
+  printf 'https://github.com/%s/releases' "$source_repo"
+}
+
+choose_backhaul_source() {
+  local choice
+  printf '\nBackhaul source:\n' >&2
+  printf '  1) %s %b[recommended]%b\n' "$POWERMATIN_BACKHAUL_REPO" "$C_GREEN" "$C_RESET" >&2
+  printf '  2) %s [official upstream]\n' "$MUSIXAL_BACKHAUL_REPO" >&2
+  while true; do
+    choice=$(tty_read "Source [1]: ")
+    case "${choice:-1}" in
+      1) printf '%s' "$POWERMATIN_BACKHAUL_REPO"; return ;;
+      2) printf '%s' "$MUSIXAL_BACKHAUL_REPO"; return ;;
+      *) warn "Choose 1 or 2." >&2 ;;
+    esac
+  done
+}
+
+read_saved_backhaul_source() {
+  local source_repo=""
+  [[ -r "$BACKHAUL_SOURCE_FILE" ]] || return 1
+  IFS= read -r source_repo < "$BACKHAUL_SOURCE_FILE" || true
+  validate_backhaul_source "$source_repo" || return 1
+  printf '%s' "$source_repo"
+}
+
+save_backhaul_source() {
+  local source_repo="$1" tmp
+  validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
+  ensure_directories
+  tmp="${BACKHAUL_SOURCE_FILE}.tmp.$$"
+  if ! printf '%s\n' "$source_repo" > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$BACKHAUL_SOURCE_FILE"
 }
 
 validate_host() {
@@ -451,22 +504,28 @@ restore_file() {
 }
 
 download_backhaul() {
-  local requested="$1" asset url tmp_dir archive member candidate current_version="" candidate_version
+  local requested="$1" source_repo="${2:-$DEFAULT_BACKHAUL_SOURCE}"
+  local release_base asset url tmp_dir archive member candidate current_version="" current_source="" candidate_version
   BINARY_BACKUP=""
   BINARY_CHANGED=0
+  if ! validate_backhaul_source "$source_repo"; then
+    err "Invalid Backhaul source: ${source_repo}"
+    return 1
+  fi
   requested=$(normalize_version "$requested")
+  release_base=$(backhaul_release_base "$source_repo") || return 1
   asset=$(detect_arch_asset) || return 1
   ensure_directories
 
   if [[ "$requested" == "latest" ]]; then
-    url="${UPSTREAM_RELEASES}/latest/download/${asset}"
+    url="${release_base}/latest/download/${asset}"
   else
-    url="${UPSTREAM_RELEASES}/download/${requested}/${asset}"
+    url="${release_base}/download/${requested}/${asset}"
   fi
 
   tmp_dir=$(mktemp -d /tmp/backhaul-manager.XXXXXX)
   archive="${tmp_dir}/${asset}"
-  info "Downloading Backhaul ${requested} for $(uname -m)..."
+  info "Downloading Backhaul ${requested} from ${source_repo} for $(uname -m)..."
   if ! curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
       --connect-timeout 10 --max-time 180 -o "$archive" "$url"; then
     rm -rf -- "$tmp_dir"
@@ -515,12 +574,16 @@ download_backhaul() {
 
   if [[ -x "$BACKHAUL_BIN" ]]; then
     current_version=$("$BACKHAUL_BIN" -v 2>/dev/null || true)
+    if ! current_source=$(read_saved_backhaul_source 2>/dev/null); then
+      # Manager versions before source selection always installed Musixal/Backhaul.
+      current_source="$MUSIXAL_BACKHAUL_REPO"
+    fi
   fi
-  if [[ -n "$current_version" && "$current_version" == "$candidate_version" ]]; then
+  if [[ -n "$current_version" && "$current_version" == "$candidate_version" && "$current_source" == "$source_repo" ]]; then
     DOWNLOADED_VERSION="$candidate_version"
     BINARY_CHANGED=0
     rm -rf -- "$tmp_dir"
-    ok "Backhaul ${candidate_version} is already installed."
+    ok "Backhaul ${candidate_version} from ${source_repo} is already installed."
     return 0
   fi
 
@@ -535,12 +598,13 @@ download_backhaul() {
 }
 
 write_service_file() {
-  local tmp
+  local source_repo="$1" tmp
+  validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
   tmp=$(mktemp /etc/systemd/system/.backhaul.service.XXXXXX)
   cat > "$tmp" <<EOF
 [Unit]
 Description=Backhaul Reverse Tunnel Service
-Documentation=https://github.com/Musixal/Backhaul
+Documentation=https://github.com/${source_repo}
 Wants=network-online.target
 After=network-online.target
 
@@ -785,11 +849,12 @@ firewall_hint() {
 }
 
 write_server_info() {
-  local control_port="$1" transport="$2" token="$3"
+  local control_port="$1" transport="$2" token="$3" source_repo="$4"
   {
     printf 'Backhaul Manager - Server (Iran)\n'
     printf 'Generated     : %s\n\n' "$(date -Is 2>/dev/null || date)"
     printf 'Backhaul      : %s\n' "$DOWNLOADED_VERSION"
+    printf 'Source        : %s\n' "$source_repo"
     printf 'Transport     : %s\n' "$transport"
     printf 'Control port  : %s\n' "$control_port"
     printf 'Tunnel ports  : %s\n' "${PARSED_PORTS[*]}"
@@ -801,11 +866,12 @@ write_server_info() {
 }
 
 write_client_info() {
-  local remote_addr="$1" transport="$2"
+  local remote_addr="$1" transport="$2" source_repo="$3"
   {
     printf 'Backhaul Manager - Client (Foreign)\n'
     printf 'Generated     : %s\n\n' "$(date -Is 2>/dev/null || date)"
     printf 'Backhaul      : %s\n' "$DOWNLOADED_VERSION"
+    printf 'Source        : %s\n' "$source_repo"
     printf 'Transport     : %s\n' "$transport"
     printf 'Iran server   : %s\n' "$remote_addr"
     printf 'Config        : %s\n' "$CONFIG_FILE"
@@ -828,12 +894,13 @@ print_server_secret_summary() {
 
 configure_server() {
   printf '\n%b===== Configure Iran / server side =====%b\n' "$C_BOLD" "$C_RESET"
-  local control_port transport token version tls_cert="" tls_key=""
+  local control_port transport token source_repo version tls_cert="" tls_key=""
   local config_snapshot="" service_snapshot="" binary_snapshot="" was_active="no" was_enabled="no" protocol p
   control_port=$(ask_port "Backhaul control port" "8080")
   ask_ports "$control_port"
   transport=$(choose_transport)
   token=$(ask_server_token)
+  source_repo=$(choose_backhaul_source)
   version=$(ask_version)
   if transport_uses_tls "$transport"; then
     printf '\nTLS transports require a certificate and private key on the server.\n'
@@ -852,7 +919,7 @@ configure_server() {
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && was_enabled="yes"
   snapshot_file "$CONFIG_FILE" "config" config_snapshot
   snapshot_file "$SERVICE_FILE" "service" service_snapshot
-  if ! download_backhaul "$version"; then
+  if ! download_backhaul "$version" "$source_repo"; then
     return 1
   fi
   binary_snapshot="$BINARY_BACKUP"
@@ -860,7 +927,7 @@ configure_server() {
     rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled"
     return 1
   fi
-  if ! write_service_file; then
+  if ! write_service_file "$source_repo"; then
     rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled"
     return 1
   fi
@@ -875,14 +942,17 @@ configure_server() {
     if check_listening_port "$p" "$protocol"; then ok "Tunnel port ${p}/${protocol} is listening."; else warn "Tunnel port ${p}/${protocol} is not listening yet."; fi
   done
   firewall_hint "$protocol" "$control_port" "${PARSED_PORTS[@]}"
-  write_server_info "$control_port" "$transport" "$token"
+  if ! save_backhaul_source "$source_repo"; then
+    warn "Configuration succeeded, but the selected Backhaul source could not be saved."
+  fi
+  write_server_info "$control_port" "$transport" "$token" "$source_repo"
   print_server_secret_summary "$token" "$control_port" "$transport"
   ok "Server configuration completed."
 }
 
 configure_client() {
   printf '\n%b===== Configure foreign / client side =====%b\n' "$C_BOLD" "$C_RESET"
-  local iran_host control_port remote_addr transport token version edge_ip=""
+  local iran_host control_port remote_addr transport token source_repo version edge_ip=""
   local config_snapshot="" service_snapshot="" binary_snapshot="" was_active="no" was_enabled="no" protocol
   iran_host=$(ask_host "Iran server IP or hostname")
   control_port=$(ask_port "Backhaul control port" "8080")
@@ -896,6 +966,7 @@ configure_client() {
       edge_ip=""
     fi
   fi
+  source_repo=$(choose_backhaul_source)
   version=$(ask_version)
 
   handle_old_services
@@ -904,7 +975,7 @@ configure_client() {
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && was_enabled="yes"
   snapshot_file "$CONFIG_FILE" "config" config_snapshot
   snapshot_file "$SERVICE_FILE" "service" service_snapshot
-  if ! download_backhaul "$version"; then
+  if ! download_backhaul "$version" "$source_repo"; then
     return 1
   fi
   binary_snapshot="$BINARY_BACKUP"
@@ -912,7 +983,7 @@ configure_client() {
     rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled"
     return 1
   fi
-  if ! write_service_file; then
+  if ! write_service_file "$source_repo"; then
     rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled"
     return 1
   fi
@@ -938,7 +1009,10 @@ configure_client() {
       fi
     fi
   fi
-  write_client_info "$remote_addr" "$transport"
+  if ! save_backhaul_source "$source_repo"; then
+    warn "Configuration succeeded, but the selected Backhaul source could not be saved."
+  fi
+  write_client_info "$remote_addr" "$transport" "$source_repo"
   ok "Client configuration completed."
 }
 
@@ -956,8 +1030,15 @@ config_role() {
 }
 
 show_status() {
-  local version="not installed" active="inactive" enabled="disabled" role transport address
+  local version="not installed" active="inactive" enabled="disabled" role transport address source_repo="not selected"
   [[ -x "$BACKHAUL_BIN" ]] && version=$("$BACKHAUL_BIN" -v 2>/dev/null || printf 'unknown')
+  if ! source_repo=$(read_saved_backhaul_source 2>/dev/null); then
+    if [[ -x "$BACKHAUL_BIN" ]]; then
+      source_repo="${MUSIXAL_BACKHAUL_REPO} (legacy)"
+    else
+      source_repo="not selected"
+    fi
+  fi
   service_is_active && active="active"
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && enabled="enabled"
   role=$(config_role)
@@ -966,6 +1047,7 @@ show_status() {
   printf '\n%bBackhaul status%b\n' "$C_BOLD" "$C_RESET"
   printf '  Manager    : v%s\n' "$MANAGER_VERSION"
   printf '  Backhaul   : %s\n' "$version"
+  printf '  Source     : %s\n' "$source_repo"
   printf '  Role       : %s\n' "$role"
   printf '  Transport  : %s\n' "${transport:-unknown}"
   printf '  Endpoint   : %s\n' "${address:-unknown}"
@@ -1037,16 +1119,27 @@ service_action() {
 }
 
 upgrade_backhaul() {
-  local version="${1:-latest}" was_active="no" previous_backup
+  local version="${1:-latest}" source_repo="${2:-}" was_active="no" previous_backup
   validate_version "$version" || { err "Invalid Backhaul version: ${version}"; return 1; }
   version=$(normalize_version "$version")
   [[ -f "$CONFIG_FILE" ]] || { err "No managed installation found. Configure Backhaul first."; return 1; }
+  if [[ -z "$source_repo" ]]; then
+    if ! source_repo=$(read_saved_backhaul_source 2>/dev/null); then
+      # Preserve the source used by Manager releases from before source selection existed.
+      source_repo="$MUSIXAL_BACKHAUL_REPO"
+    fi
+  fi
+  validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
   service_is_active && was_active="yes"
-  if ! download_backhaul "$version"; then return 1; fi
+  if ! download_backhaul "$version" "$source_repo"; then return 1; fi
   previous_backup="$BINARY_BACKUP"
-  if (( BINARY_CHANGED == 0 )); then return 0; fi
+  if (( BINARY_CHANGED == 0 )); then
+    save_backhaul_source "$source_repo"
+    return 0
+  fi
   if [[ "$was_active" == "yes" ]]; then
     if systemctl restart "$SERVICE_NAME" && sleep 1 && service_is_active; then
+      save_backhaul_source "$source_repo"
       ok "Upgrade complete: ${DOWNLOADED_VERSION}."
     else
       err "The upgraded binary failed to start; rolling back."
@@ -1057,6 +1150,7 @@ upgrade_backhaul() {
       return 1
     fi
   else
+    save_backhaul_source "$source_repo"
     ok "Upgraded to ${DOWNLOADED_VERSION}; service remains stopped."
   fi
 }
