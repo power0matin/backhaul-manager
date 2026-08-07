@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly MANAGER_VERSION="3.0.2"
+readonly MANAGER_VERSION="3.1.0"
 readonly BACKHAUL_DIR="/opt/backhaul"
 readonly BACKHAUL_BIN="${BACKHAUL_DIR}/backhaul"
 readonly BASE_CONFIG_DIR="/root/backhaul"
@@ -22,6 +22,8 @@ readonly MUSIXAL_BACKHAUL_REPO="Musixal/Backhaul"
 readonly DEFAULT_BACKHAUL_SOURCE="$POWERMATIN_BACKHAUL_REPO"
 readonly MANAGER_INSTALL_PATH="/usr/local/sbin/backhaul-manager"
 readonly MANAGER_RAW_URL="https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh"
+readonly OPERATION_LOCK_FILE="/run/lock/backhaul-manager.lock"
+readonly UNKNOWN_BACKHAUL_SOURCE="unknown"
 
 ACTIVE_PROFILE="default"
 CONFIG_DIR="$BASE_CONFIG_DIR"
@@ -42,6 +44,12 @@ LEGACY_CONFIG_FILES=()
 BACKUP_CHOICES=()
 COMPAT_UNSUPPORTED_KEYS=()
 INCOMPATIBLE_PROFILES=()
+TRANSACTION_ACTIVE=0
+TRANSACTION_ROLLBACK_FUNC=""
+TRANSACTION_ROLLBACK_ARGS=()
+TRANSACTION_ROLLBACK_RUNNING=0
+OPERATION_LOCK_HELD=0
+STARTED_SERVICE_COUNT=0
 
 # Per-configuration tuning/advanced settings. reset_config_options() restores
 # conservative defaults before each interactive configure operation.
@@ -76,24 +84,57 @@ err()  { printf '%b[FAIL]%b %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
 on_interrupt() {
   printf '\n' >&2
   err "Interrupted by user."
+  rollback_active_transaction "interrupt" || true
   exit 130
 }
 
 on_terminate() {
   err "Terminated."
+  rollback_active_transaction "termination" || true
   exit 143
 }
 
-on_error() {
-  local exit_code=$? line_no="${1:-?}"
-  err "Unexpected error at line ${line_no} (exit ${exit_code})."
-  [[ -n "$LOG_FILE" ]] && err "Run log: ${LOG_FILE}"
-  return "$exit_code"
+begin_transaction() {
+  local rollback_func="$1"
+  shift
+  (( TRANSACTION_ACTIVE == 0 )) || { err "An internal transaction is already active."; return 1; }
+  declare -F "$rollback_func" >/dev/null || { err "Invalid rollback handler: ${rollback_func}"; return 1; }
+  TRANSACTION_ROLLBACK_FUNC="$rollback_func"
+  TRANSACTION_ROLLBACK_ARGS=("$@")
+  TRANSACTION_ACTIVE=1
+}
+
+commit_transaction() {
+  TRANSACTION_ACTIVE=0
+  TRANSACTION_ROLLBACK_FUNC=""
+  TRANSACTION_ROLLBACK_ARGS=()
+}
+
+rollback_active_transaction() {
+  local reason="${1:-failure}" rollback_func rc=0
+  (( TRANSACTION_ACTIVE == 1 )) || return 0
+  (( TRANSACTION_ROLLBACK_RUNNING == 0 )) || return 0
+  rollback_func="$TRANSACTION_ROLLBACK_FUNC"
+  TRANSACTION_ACTIVE=0
+  TRANSACTION_ROLLBACK_RUNNING=1
+  trap '' INT TERM
+  warn "Rolling back the active operation after ${reason}..."
+  if "$rollback_func" "${TRANSACTION_ROLLBACK_ARGS[@]}"; then
+    :
+  else
+    rc=$?
+    err "Automatic rollback did not complete cleanly; inspect the run log and latest backup before making more changes."
+  fi
+  TRANSACTION_ROLLBACK_RUNNING=0
+  TRANSACTION_ROLLBACK_FUNC=""
+  TRANSACTION_ROLLBACK_ARGS=()
+  trap on_interrupt INT
+  trap on_terminate TERM
+  return "$rc"
 }
 
 trap on_interrupt INT
 trap on_terminate TERM
-trap 'on_error "$LINENO"' ERR
 
 usage() {
   cat <<EOF
@@ -110,6 +151,7 @@ Usage:
   sudo ./backhaul-manager.sh --stop          Stop Backhaul
   sudo ./backhaul-manager.sh --upgrade [ver] Upgrade Backhaul (default: latest)
   sudo ./backhaul-manager.sh --migrate-source REPO [ver]
+  sudo ./backhaul-manager.sh --set-source REPO
   sudo ./backhaul-manager.sh --compat [REPO] Check config/source compatibility
   sudo ./backhaul-manager.sh --list-profiles List managed profiles and detected legacy tunnels
   sudo ./backhaul-manager.sh --select-profile NAME
@@ -162,7 +204,7 @@ check_platform() {
 check_dependencies() {
   local -a missing=()
   local cmd
-  for cmd in awk basename cmp cp curl find grep install journalctl mktemp sed sha256sum sort ss stat systemctl tar tee; do
+  for cmd in awk basename cmp cp curl find flock grep install journalctl mktemp sed sha256sum sort ss stat systemctl tar tee tr; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if (( ${#missing[@]} > 0 )); then
@@ -175,17 +217,46 @@ check_dependencies() {
   fi
 }
 
+operation_requires_lock() {
+  case "${1:-}" in
+    -h|--help|-V|--version|--status|--diagnose|--metrics|--compat|--list-profiles|--list-backups|--logs|--follow-logs)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+acquire_operation_lock() {
+  (( OPERATION_LOCK_HELD == 0 )) || return 0
+  if ! install -d -m 0755 "$(dirname "$OPERATION_LOCK_FILE")"; then
+    err "Could not prepare the Manager lock directory."
+    return 1
+  fi
+  if ! { exec 9>"$OPERATION_LOCK_FILE"; }; then
+    err "Could not open the Manager operation lock."
+    return 1
+  fi
+  if ! flock -n 9; then
+    err "Another Backhaul Manager operation is already running."
+    info "Finish or exit the other Manager session before making changes."
+    return 1
+  fi
+  OPERATION_LOCK_HELD=1
+}
+
 setup_logging() {
-  install -d -m 0700 "$LOG_DIR"
+  install -d -m 0700 "$LOG_DIR" || { err "Could not create ${LOG_DIR}."; return 1; }
   LOG_FILE="${LOG_DIR}/run-$(date +%Y%m%d-%H%M%S)-$$.log"
-  : > "$LOG_FILE"
-  chmod 0600 "$LOG_FILE"
+  : > "$LOG_FILE" || return 1
+  chmod 0600 "$LOG_FILE" || return 1
   exec > >(tee -a "$LOG_FILE") 2>&1
 }
 
 ensure_directories() {
-  install -d -m 0755 "$BACKHAUL_DIR"
-  install -d -m 0700 "$BASE_CONFIG_DIR" "$PROFILES_DIR" "$CONFIG_DIR" "$STATE_DIR" "$BACKUP_DIR"
+  install -d -m 0755 "$BACKHAUL_DIR" || return 1
+  install -d -m 0700 "$BASE_CONFIG_DIR" "$PROFILES_DIR" "$CONFIG_DIR" "$STATE_DIR" "$BACKUP_DIR" || return 1
 }
 
 validate_profile_name() {
@@ -288,6 +359,7 @@ refresh_legacy_configs_from_root() {
     [[ -f "$file" ]] || continue
     [[ ! -L "$file" ]] || continue
     [[ "$file" != "$root/config.toml" ]] || continue
+    validate_legacy_config_basename "${file##*/}" || continue
     role=$(config_role_from_file "$file")
     [[ "$role" == "server" || "$role" == "client" ]] || continue
     transport=$(config_value_from_file "$file" transport 2>/dev/null || true)
@@ -300,6 +372,15 @@ refresh_legacy_configs_from_root() {
     validate_endpoint "$endpoint" || continue
     LEGACY_CONFIG_FILES+=("$file")
   done
+}
+
+validate_legacy_config_basename() {
+  local name="$1"
+  [[ "$name" != "config.toml" && "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.toml$ ]]
+}
+
+validate_service_unit_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9@_.:-]{0,127}\.service$ ]]
 }
 
 refresh_legacy_configs() {
@@ -344,11 +425,34 @@ find_services_for_config_file() {
       service=$(basename "$unit_file")
       [[ -n "${seen[$service]:-}" ]] && continue
       seen[$service]=1
-      if unit_file_uses_config_file "$unit_file" "$config_file"; then
+      if service_uses_config_file "$service" "$unit_file" "$config_file"; then
         printf '%s\n' "$service"
       fi
     done
   done
+}
+
+service_uses_config_file() {
+  local service="$1" unit_file="$2" config_file="$3" exec_start
+  [[ -n "$service" && -n "$config_file" ]] || return 1
+  exec_start=$(systemctl show "$service" -p ExecStart --value 2>/dev/null || true)
+  # `systemctl show --value` emits a structured ExecStart record containing
+  # path=/argv[]= on real systemd. Some container shims print diagnostics to
+  # stdout, so only a structured record is authoritative over the static unit.
+  if [[ "$exec_start" == *"path="* || "$exec_start" == *"argv[]="* ]]; then
+    [[ "$exec_start" == *"path=${BACKHAUL_BIN} "* || "$exec_start" == *"path=${BACKHAUL_BIN};"* ]] || return 1
+    case " $exec_start " in
+      *" -c ${config_file} "*|*" --config ${config_file} "*|*" --config=${config_file} "*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  unit_file_uses_backhaul_binary "$unit_file" && unit_file_uses_config_file "$unit_file" "$config_file"
+}
+
+service_effective_uses_backhaul_binary() {
+  local service="$1" exec_start
+  exec_start=$(systemctl show "$service" -p ExecStart --value 2>/dev/null || true)
+  [[ "$exec_start" == *"path=${BACKHAUL_BIN} "* || "$exec_start" == *"path=${BACKHAUL_BIN};"* ]]
 }
 
 find_service_for_config_file() {
@@ -387,16 +491,50 @@ unit_file_uses_config_file() {
   return 1
 }
 
+unit_file_uses_backhaul_binary() {
+  local unit_file="$1" line command
+  [[ -f "$unit_file" ]] || return 1
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*ExecStart= ]] || continue
+    command="${line#*=}"
+    command="${command#${command%%[![:space:]]*}}"
+    case "$command" in
+      "${BACKHAUL_BIN}"|"${BACKHAUL_BIN} "*) return 0 ;;
+    esac
+  done < "$unit_file"
+  return 1
+}
+
+unit_file_safe_for_restore() {
+  local unit_file="$1" config_file="$2" exec_count
+  unit_file_uses_backhaul_binary "$unit_file" || return 1
+  unit_file_uses_config_file "$unit_file" "$config_file" || return 1
+  exec_count=$(grep -cE '^[[:space:]]*ExecStart=' "$unit_file" 2>/dev/null || true)
+  [[ "$exec_count" == "1" ]] || return 1
+  # Portable backups are restored as root. Do not accept additional command
+  # hooks or environment injection that could turn a crafted unit into code
+  # execution during restore.
+  if grep -qE '^[[:space:]]*(Exec(StartPre|StartPost|Reload|Stop|StopPost|Condition)|Environment|EnvironmentFile|PassEnvironment|SetCredential|LoadCredential|StandardOutput|StandardError)=' "$unit_file" 2>/dev/null; then
+    return 1
+  fi
+}
+
+unit_file_mentions_backhaul_binary() {
+  local unit_file="$1"
+  [[ -f "$unit_file" ]] || return 1
+  awk -v bin="$BACKHAUL_BIN" '/^[[:space:]]*Exec[A-Za-z]*=/ && index($0, bin) {found=1} END {exit !found}' "$unit_file"
+}
+
 profile_service_uses_config_file() {
   local profile="$1" config_file="$2" service unit_file
   service=$(profile_service_name "$profile") || return 1
   unit_file="/etc/systemd/system/${service}"
-  unit_file_uses_config_file "$unit_file" "$config_file"
+  service_uses_config_file "$service" "$unit_file" "$config_file"
 }
 
 guard_selected_service_mapping() {
   [[ -f "$SERVICE_FILE" ]] || return 0
-  if unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+  if profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
     return 0
   fi
   err "Service/config mismatch: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
@@ -404,22 +542,66 @@ guard_selected_service_mapping() {
   return 1
 }
 
-guard_active_legacy_tunnels() {
-  local operation="$1" file svc found=0
+guard_shared_binary_consumers() {
+  local operation="$1" unit_dir unit_file svc profile file recognized found=0
+  local -a unit_dirs=(/etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system)
+  local -A seen=()
+  refresh_profile_names
   refresh_legacy_configs
-  for file in "${LEGACY_CONFIG_FILES[@]}"; do
-    while IFS= read -r svc; do
-      [[ -n "$svc" ]] || continue
-      systemctl is-active --quiet "$svc" 2>/dev/null || continue
-      if (( found == 0 )); then
-        err "Cannot ${operation} while active legacy tunnels are outside profile management:"
+  for unit_dir in "${unit_dirs[@]}"; do
+    [[ -d "$unit_dir" ]] || continue
+    for unit_file in "$unit_dir"/*.service; do
+      [[ -f "$unit_file" ]] || continue
+      svc="${unit_file##*/}"
+      [[ -z "${seen[$svc]:-}" ]] || continue
+      seen[$svc]=1
+      if ! service_effective_uses_backhaul_binary "$svc" && ! unit_file_mentions_backhaul_binary "$unit_file"; then
+        continue
       fi
-      printf '  - %s [%s]\n' "$file" "$svc"
-      found=1
-    done < <(find_services_for_config_file "$file" 2>/dev/null)
+      recognized=0
+      for profile in "${PROFILE_NAMES[@]}"; do
+        profile_exists "$profile" || continue
+        file=$(profile_config_path "$profile")
+        if service_uses_config_file "$svc" "$unit_file" "$file"; then recognized=1; break; fi
+      done
+      if (( recognized == 0 )); then
+        for file in "${LEGACY_CONFIG_FILES[@]}"; do
+          if service_uses_config_file "$svc" "$unit_file" "$file"; then recognized=1; break; fi
+        done
+      fi
+      if (( recognized == 0 )); then
+        (( found == 0 )) && err "Cannot ${operation}; untracked services also use the shared Backhaul binary:"
+        printf '  - %s\n' "$svc"
+        found=1
+      fi
+    done
   done
   (( found == 0 )) || {
-    info "Adopt these tunnels from Profiles first so backup, verification, and rollback can cover them."
+    info "Move these services into Profiles or point them at a separate binary before continuing."
+    return 1
+  }
+}
+
+guard_active_legacy_tunnels() {
+  local operation="$1" file svc state found=0 service_count
+  refresh_legacy_configs
+  for file in "${LEGACY_CONFIG_FILES[@]}"; do
+    if (( found == 0 )); then
+      err "Cannot ${operation} while legacy tunnels remain outside profile management:"
+    fi
+    service_count=0
+    while IFS= read -r svc; do
+      [[ -n "$svc" ]] || continue
+      service_count=$((service_count + 1))
+      state="stopped"
+      systemctl is-active --quiet "$svc" 2>/dev/null && state="active"
+      printf '  - %s [%s, %s]\n' "$file" "$svc" "$state"
+    done < <(find_services_for_config_file "$file" 2>/dev/null)
+    (( service_count > 0 )) || printf '  - %s [no service detected]\n' "$file"
+    found=1
+  done
+  (( found == 0 )) || {
+    info "Adopt these tunnels from Profiles first so compatibility, source changes, and rollback cover every tunnel."
     return 1
   }
 }
@@ -427,11 +609,13 @@ guard_active_legacy_tunnels() {
 save_active_profile() {
   local name="$1" tmp
   validate_profile_name "$name" || return 1
-  install -d -m 0700 "$STATE_DIR"
+  install -d -m 0700 "$STATE_DIR" || return 1
   tmp="${ACTIVE_PROFILE_FILE}.tmp.$$"
-  printf '%s\n' "$name" > "$tmp"
-  chmod 0600 "$tmp"
-  mv -f -- "$tmp" "$ACTIVE_PROFILE_FILE"
+  if ! printf '%s\n' "$name" > "$tmp" || ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$ACTIVE_PROFILE_FILE"; then
+    rm -f -- "$tmp"
+    err "Could not persist the active profile selection."
+    return 1
+  fi
 }
 
 load_active_profile() {
@@ -449,8 +633,8 @@ select_profile() {
   local name="$1"
   validate_profile_name "$name" || { err "Invalid profile name: ${name}"; return 1; }
   profile_exists "$name" || { err "Profile '${name}' is not configured."; return 1; }
-  apply_profile_context "$name"
-  save_active_profile "$name"
+  apply_profile_context "$name" || return 1
+  save_active_profile "$name" || return 1
   ok "Active profile: ${name}."
 }
 
@@ -614,14 +798,17 @@ read_saved_backhaul_source() {
 save_backhaul_source() {
   local source_repo="$1" tmp
   validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
-  ensure_directories
+  ensure_directories || return 1
   tmp="${BACKHAUL_SOURCE_FILE}.tmp.$$"
   if ! printf '%s\n' "$source_repo" > "$tmp"; then
     rm -f -- "$tmp"
     return 1
   fi
-  chmod 0600 "$tmp"
-  mv -f -- "$tmp" "$BACKHAUL_SOURCE_FILE"
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$BACKHAUL_SOURCE_FILE"; then
+    rm -f -- "$tmp"
+    err "Could not persist Backhaul source metadata."
+    return 1
+  fi
 }
 
 validate_host() {
@@ -1089,7 +1276,10 @@ snapshot_file() {
   local source="$1" prefix="$2" output_var="$3" snapshot=""
   if [[ -f "$source" ]]; then
     snapshot="${BACKUP_DIR}/${prefix}.$(date +%Y%m%d-%H%M%S-%N)-$$"
-    cp -a -- "$source" "$snapshot"
+    if ! cp -a -- "$source" "$snapshot"; then
+      err "Could not snapshot ${source}; the operation was stopped before mutation."
+      return 1
+    fi
   fi
   printf -v "$output_var" '%s' "$snapshot"
 }
@@ -1108,11 +1298,86 @@ current_backhaul_source() {
   if source_repo=$(read_saved_backhaul_source 2>/dev/null); then
     printf '%s' "$source_repo"
   elif [[ -x "$BACKHAUL_BIN" ]]; then
-    # Every Manager release before source tracking downloaded Musixal.
-    printf '%s' "$MUSIXAL_BACKHAUL_REPO"
+    # Existing binaries may have been installed, replaced, or migrated outside
+    # this Manager. Never guess their repository from historical defaults.
+    printf '%s' "$UNKNOWN_BACKHAUL_SOURCE"
   else
     printf '%s' "$DEFAULT_BACKHAUL_SOURCE"
   fi
+}
+
+installed_backhaul_version() {
+  local version
+  [[ -x "$BACKHAUL_BIN" ]] || return 1
+  version=$("$BACKHAUL_BIN" -v 2>/dev/null) || return 1
+  validate_version "$version" || return 1
+  [[ "$version" != "latest" ]] || return 1
+  normalize_version "$version"
+}
+
+validate_backhaul_source_or_unknown() {
+  [[ "$1" == "$UNKNOWN_BACKHAUL_SOURCE" ]] || validate_backhaul_source "$1"
+}
+
+persist_backhaul_source_state() {
+  local source_repo="$1"
+  if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+    rm -f -- "$BACKHAUL_SOURCE_FILE" || return 1
+    return
+  fi
+  save_backhaul_source "$source_repo"
+}
+
+release_asset_available() {
+  local source_repo="$1" version="$2" asset release_base url
+  validate_backhaul_source "$source_repo" || return 1
+  validate_version "$version" || return 1
+  version=$(normalize_version "$version")
+  [[ "$version" != "latest" ]] || return 1
+  asset=$(detect_arch_asset) || return 1
+  release_base=$(backhaul_release_base "$source_repo") || return 1
+  url="${release_base}/download/${version}/${asset}"
+  curl --proto '=https' --tlsv1.2 -fsIL --retry 2 --connect-timeout 10 --max-time 30 "$url" >/dev/null
+}
+
+claim_backhaul_source() {
+  local source_repo="$1" version
+  validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
+  [[ -x "$BACKHAUL_BIN" ]] || { err "No Backhaul binary is installed to identify."; return 1; }
+  if ! version=$(installed_backhaul_version); then
+    err "The installed Backhaul binary did not report a valid version."
+    return 1
+  fi
+  info "Verifying that ${source_repo} publishes ${version} for this architecture..."
+  if ! release_asset_available "$source_repo" "$version"; then
+    err "${source_repo} does not expose the installed ${version} release asset for this architecture."
+    info "No source metadata was changed. Choose the repository that actually supplied this binary."
+    return 1
+  fi
+  save_backhaul_source "$source_repo" || return 1
+  ok "Recorded current Backhaul source: ${source_repo} (${version})."
+}
+
+claim_backhaul_source_interactive() {
+  local source_repo current
+  [[ -x "$BACKHAUL_BIN" ]] || { err "Backhaul is not installed; there is no existing binary to identify."; return 1; }
+  current=$(current_backhaul_source)
+  printf '\n%bRecord current Backhaul source%b\n' "$C_BOLD" "$C_RESET"
+  printf '  Current metadata: %s\n' "$current"
+  warn "Choose the repository that supplied the binary currently installed at ${BACKHAUL_BIN}."
+  source_repo=$(choose_backhaul_source)
+  claim_backhaul_source "$source_repo"
+}
+
+require_known_backhaul_source() {
+  local source_repo
+  source_repo=$(current_backhaul_source)
+  if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+    err "The installed Backhaul source is unknown; refusing a source-dependent operation."
+    info "Use Backhaul maintenance -> Record current source, or: backhaul-manager --set-source REPO"
+    return 1
+  fi
+  printf '%s' "$source_repo"
 }
 
 manifest_value() {
@@ -1124,86 +1389,181 @@ manifest_value() {
 backup_checksum_file() {
   local dir="$1" file
   (
-    cd "$dir"
-    : > CHECKSUMS
+    cd "$dir" || exit 1
+    : > CHECKSUMS || exit 1
     while IFS= read -r file; do
       [[ "$file" == "./CHECKSUMS" ]] && continue
-      sha256sum "$file" >> CHECKSUMS
+      sha256sum "$file" >> CHECKSUMS || exit 1
     done < <(find . -type f -print | LC_ALL=C sort)
-    chmod 0600 CHECKSUMS
+    chmod 0600 CHECKSUMS || exit 1
   )
 }
 
 backup_payload_present() {
-  local copied_profiles="$1" binary_path="$2"
-  (( copied_profiles > 0 )) || [[ -x "$binary_path" ]]
+  local copied_profiles="$1" binary_path="$2" copied_legacy="${3:-0}"
+  (( copied_profiles > 0 || copied_legacy > 0 )) || [[ -x "$binary_path" ]]
 }
 
 create_backup() {
   local label="${1:-manual}" safe_label stamp dir profile cfg_dir backup_profile svc source_repo version="unknown"
-  local tls_cert tls_key active enabled copied_profiles=0
+  local tls_cert tls_key active enabled copied_profiles=0 copied_legacy=0 legacy_file legacy_name legacy_tls_dir
+  local -a legacy_services=()
+  local -A legacy_service_seen=()
   safe_label="${label//[^A-Za-z0-9_-]/-}"
   safe_label="${safe_label:0:32}"
   [[ -n "$safe_label" ]] || safe_label="manual"
-  ensure_directories
+  ensure_directories || return 1
   refresh_profile_names
+  refresh_legacy_configs
   if [[ ! -x "$BACKHAUL_BIN" ]]; then
     local found_config=0
     for profile in "${PROFILE_NAMES[@]}"; do profile_exists "$profile" && found_config=1; done
+    (( ${#LEGACY_CONFIG_FILES[@]} > 0 )) && found_config=1
     (( found_config )) || { err "Nothing is installed or configured to back up."; return 1; }
   fi
   stamp=$(date +%Y%m%d-%H%M%S)
   dir="${BACKUP_DIR}/backup-${stamp}-${safe_label}-$$"
-  install -d -m 0700 "$dir" "$dir/profiles" "$dir/state" "$dir/services"
+  if ! install -d -m 0700 "$dir" "$dir/profiles" "$dir/state" "$dir/services" "$dir/legacy" "$dir/legacy-services" "$dir/legacy-tls"; then
+    err "Could not create the backup staging directory."
+    return 1
+  fi
   source_repo=$(current_backhaul_source)
-  [[ -x "$BACKHAUL_BIN" ]] && version=$("$BACKHAUL_BIN" -v 2>/dev/null || printf 'unknown')
-  if [[ -x "$BACKHAUL_BIN" ]]; then install -m 0755 "$BACKHAUL_BIN" "$dir/backhaul"; fi
-  printf '%s\n' "$source_repo" > "$dir/state/backhaul-source"
-  printf '%s\n' "$ACTIVE_PROFILE" > "$dir/state/active-profile"
-  : > "$dir/services.state"
-  chmod 0600 "$dir/state/backhaul-source" "$dir/state/active-profile" "$dir/services.state"
+  [[ -x "$BACKHAUL_BIN" ]] && version=$(installed_backhaul_version 2>/dev/null || printf 'unknown')
+  if [[ -x "$BACKHAUL_BIN" ]] && ! install -m 0755 "$BACKHAUL_BIN" "$dir/backhaul"; then
+    rm -rf -- "$dir"
+    err "Could not include the Backhaul binary in the backup."
+    return 1
+  fi
+  if ! printf '%s\n' "$source_repo" > "$dir/state/backhaul-source" \
+      || ! printf '%s\n' "$ACTIVE_PROFILE" > "$dir/state/active-profile" \
+      || ! : > "$dir/services.state" \
+      || ! : > "$dir/legacy-services.state" \
+      || ! chmod 0600 "$dir/state/backhaul-source" "$dir/state/active-profile" "$dir/services.state" "$dir/legacy-services.state"; then
+    rm -rf -- "$dir"
+    err "Could not initialize the backup metadata."
+    return 1
+  fi
 
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" || continue
     cfg_dir="$(dirname "$(profile_config_path "$profile")")"
     backup_profile="${dir}/profiles/${profile}"
-    install -d -m 0700 "$backup_profile"
-    install -m 0600 "${cfg_dir}/config.toml" "$backup_profile/config.toml"
-    [[ -f "${cfg_dir}/backhaul-info.txt" ]] && install -m 0600 "${cfg_dir}/backhaul-info.txt" "$backup_profile/backhaul-info.txt"
+    if ! install -d -m 0700 "$backup_profile" \
+        || ! install -m 0600 "${cfg_dir}/config.toml" "$backup_profile/config.toml"; then
+      rm -rf -- "$dir"
+      err "Could not back up profile '${profile}'."
+      return 1
+    fi
+    if [[ -f "${cfg_dir}/backhaul-info.txt" ]] && ! install -m 0600 "${cfg_dir}/backhaul-info.txt" "$backup_profile/backhaul-info.txt"; then
+      rm -rf -- "$dir"
+      err "Could not back up profile metadata for '${profile}'."
+      return 1
+    fi
     tls_cert=$(config_value_from_file "${cfg_dir}/config.toml" tls_cert 2>/dev/null || true)
     tls_key=$(config_value_from_file "${cfg_dir}/config.toml" tls_key 2>/dev/null || true)
     if [[ -n "$tls_cert" || -n "$tls_key" ]]; then
       if [[ -r "$tls_cert" && -r "$tls_key" ]]; then
-        install -m 0600 "$tls_cert" "$backup_profile/tls-cert.pem"
-        install -m 0600 "$tls_key" "$backup_profile/tls-key.pem"
+        if ! install -m 0600 "$tls_cert" "$backup_profile/tls-cert.pem" \
+            || ! install -m 0600 "$tls_key" "$backup_profile/tls-key.pem"; then
+          rm -rf -- "$dir"
+          err "Could not back up TLS material for profile '${profile}'."
+          return 1
+        fi
       else
-        warn "Profile '${profile}' references TLS files that could not be included in the backup."
+        rm -rf -- "$dir"
+        err "Profile '${profile}' references TLS files that cannot be backed up safely."
+        return 1
       fi
     fi
     svc=$(profile_service_name "$profile")
     if [[ -f "/etc/systemd/system/${svc}" ]]; then
-      install -m 0644 "/etc/systemd/system/${svc}" "$dir/services/${svc}"
+      if ! install -m 0644 "/etc/systemd/system/${svc}" "$dir/services/${svc}"; then
+        rm -rf -- "$dir"
+        err "Could not back up systemd unit '${svc}'."
+        return 1
+      fi
     fi
     active="no"; enabled="no"
     systemctl is-active --quiet "$svc" 2>/dev/null && active="yes"
     systemctl is-enabled --quiet "$svc" 2>/dev/null && enabled="yes"
-    printf '%s %s %s\n' "$svc" "$active" "$enabled" >> "$dir/services.state"
+    if ! printf '%s %s %s\n' "$svc" "$active" "$enabled" >> "$dir/services.state"; then
+      rm -rf -- "$dir"
+      return 1
+    fi
     ((copied_profiles += 1))
   done
-  if ! backup_payload_present "$copied_profiles" "$BACKHAUL_BIN"; then
+
+  for legacy_file in "${LEGACY_CONFIG_FILES[@]}"; do
+    legacy_name="${legacy_file##*/}"
+    validate_legacy_config_basename "$legacy_name" || continue
+    if ! install -m 0600 "$legacy_file" "$dir/legacy/$legacy_name"; then
+      rm -rf -- "$dir"
+      err "Could not include legacy config '${legacy_name}' in the full backup."
+      return 1
+    fi
+    tls_cert=$(config_value_from_file "$legacy_file" tls_cert 2>/dev/null || true)
+    tls_key=$(config_value_from_file "$legacy_file" tls_key 2>/dev/null || true)
+    if [[ -n "$tls_cert" || -n "$tls_key" ]]; then
+      if [[ -r "$tls_cert" && -r "$tls_key" ]]; then
+        legacy_tls_dir="$dir/legacy-tls/$legacy_name"
+        if ! install -d -m 0700 "$legacy_tls_dir" \
+            || ! install -m 0600 "$tls_cert" "$legacy_tls_dir/cert.pem" \
+            || ! install -m 0600 "$tls_key" "$legacy_tls_dir/key.pem"; then
+          rm -rf -- "$dir"
+          err "Could not back up TLS material for legacy config '${legacy_name}'."
+          return 1
+        fi
+      else
+        rm -rf -- "$dir"
+        err "Legacy config '${legacy_name}' references TLS material that cannot be backed up safely."
+        return 1
+      fi
+    fi
+    legacy_services=()
+    mapfile -t legacy_services < <(find_services_for_config_file "$legacy_file" 2>/dev/null)
+    for svc in "${legacy_services[@]}"; do
+      validate_service_unit_name "$svc" || continue
+      [[ -n "${legacy_service_seen[$svc]:-}" ]] && continue
+      legacy_service_seen[$svc]=1
+      active="no"; enabled="no"
+      systemctl is-active --quiet "$svc" 2>/dev/null && active="yes"
+      systemctl is-enabled --quiet "$svc" 2>/dev/null && enabled="yes"
+      if [[ -f "/etc/systemd/system/${svc}" ]]; then
+        if ! install -m 0644 "/etc/systemd/system/${svc}" "$dir/legacy-services/${svc}"; then
+          rm -rf -- "$dir"
+          return 1
+        fi
+      else
+        err "Legacy service '${svc}' has no restorable unit in /etc/systemd/system."
+        rm -rf -- "$dir"
+        return 1
+      fi
+      if ! printf '%s %s %s %s\n' "$svc" "$active" "$enabled" "$legacy_name" >> "$dir/legacy-services.state"; then
+        rm -rf -- "$dir"
+        return 1
+      fi
+    done
+    ((copied_legacy += 1))
+  done
+
+  if ! backup_payload_present "$copied_profiles" "$BACKHAUL_BIN" "$copied_legacy"; then
     rm -rf -- "$dir"
     return 1
   fi
   {
-    printf 'schema=1\n'
+    printf 'schema=2\n'
     printf 'created=%s\n' "$(date -Is 2>/dev/null || date)"
     printf 'manager_version=%s\n' "$MANAGER_VERSION"
     printf 'backhaul_version=%s\n' "$version"
     printf 'source=%s\n' "$source_repo"
     printf 'active_profile=%s\n' "$ACTIVE_PROFILE"
-  } > "$dir/MANIFEST"
-  chmod 0600 "$dir/MANIFEST"
-  backup_checksum_file "$dir"
+  } > "$dir/MANIFEST" || { rm -rf -- "$dir"; return 1; }
+  chmod 0600 "$dir/MANIFEST" || { rm -rf -- "$dir"; return 1; }
+  if ! backup_checksum_file "$dir"; then
+    rm -rf -- "$dir"
+    err "Could not generate backup checksums."
+    return 1
+  fi
   if ! validate_backup_tree "$dir"; then
     rm -rf -- "$dir"
     err "Backup integrity validation failed; the incomplete snapshot was removed."
@@ -1214,12 +1574,12 @@ create_backup() {
 }
 
 validate_backup_tree() {
-  local dir="$1" schema source_repo profile_dir profile name role transport
+  local dir="$1" schema source_repo profile_dir profile name role transport legacy_file svc active enabled legacy_name config_path needs_binary=0
   [[ -d "$dir" && -f "$dir/MANIFEST" && -f "$dir/CHECKSUMS" && -f "$dir/services.state" ]] || return 1
   schema=$(manifest_value "$dir/MANIFEST" schema 2>/dev/null || true)
-  [[ "$schema" == "1" ]] || return 1
+  [[ "$schema" == "1" || "$schema" == "2" ]] || return 1
   source_repo=$(manifest_value "$dir/MANIFEST" source 2>/dev/null || true)
-  validate_backhaul_source "$source_repo" || return 1
+  validate_backhaul_source_or_unknown "$source_repo" || return 1
   (
     cd "$dir"
     sha256sum -c CHECKSUMS >/dev/null 2>&1
@@ -1237,10 +1597,58 @@ validate_backup_tree() {
       [[ "$role" == "server" || "$role" == "client" ]] || return 1
       transport=$(config_value_from_file "$profile_dir/config.toml" transport 2>/dev/null || true)
       validate_transport "$transport" || return 1
+      svc=$(profile_service_name "$name") || return 1
+      if [[ -f "$dir/services/$svc" ]]; then
+        config_path=$(profile_config_path "$name") || return 1
+        unit_file_safe_for_restore "$dir/services/$svc" "$config_path" || return 1
+      elif [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+        # With unknown provenance the Manager must restore the exact saved
+        # service definition instead of inventing source-specific metadata.
+        return 1
+      fi
     done
   fi
+  while read -r svc active enabled; do
+    [[ -n "$svc" ]] || continue
+    validate_service_unit_name "$svc" || return 1
+    [[ "$active" == "yes" || "$active" == "no" ]] || return 1
+    [[ "$enabled" == "yes" || "$enabled" == "no" ]] || return 1
+    [[ "$active" != "yes" ]] || needs_binary=1
+    profile=$(profile_from_service_name "$svc") || return 1
+    [[ -f "$dir/profiles/$profile/config.toml" ]] || return 1
+  done < "$dir/services.state"
+  if [[ "$schema" == "2" ]]; then
+    [[ -d "$dir/legacy" && -d "$dir/legacy-services" && -f "$dir/legacy-services.state" ]] || return 1
+    for legacy_file in "$dir/legacy"/*.toml; do
+      [[ -f "$legacy_file" ]] || continue
+      name="${legacy_file##*/}"
+      validate_legacy_config_basename "$name" || return 1
+      role=$(config_role_from_file "$legacy_file")
+      [[ "$role" == "server" || "$role" == "client" ]] || return 1
+      transport=$(config_value_from_file "$legacy_file" transport 2>/dev/null || true)
+      validate_transport "$transport" || return 1
+      if [[ -d "$dir/legacy-tls/$name" ]]; then
+        [[ -f "$dir/legacy-tls/$name/cert.pem" && -f "$dir/legacy-tls/$name/key.pem" ]] || return 1
+      fi
+    done
+    while read -r svc active enabled legacy_name; do
+      [[ -n "$svc" ]] || continue
+      validate_service_unit_name "$svc" || return 1
+      [[ "$active" == "yes" || "$active" == "no" ]] || return 1
+      [[ "$enabled" == "yes" || "$enabled" == "no" ]] || return 1
+      [[ "$active" != "yes" ]] || needs_binary=1
+      validate_legacy_config_basename "$legacy_name" || return 1
+      [[ -f "$dir/legacy/$legacy_name" && -f "$dir/legacy-services/$svc" ]] || return 1
+      unit_file_safe_for_restore "$dir/legacy-services/$svc" "${BASE_CONFIG_DIR}/${legacy_name}" || return 1
+    done < "$dir/legacy-services.state"
+  fi
+  (( needs_binary == 0 )) || [[ -f "$dir/backhaul" && ! -L "$dir/backhaul" ]] || return 1
   profile=$(manifest_value "$dir/MANIFEST" active_profile 2>/dev/null || printf 'default')
   validate_profile_name "$profile"
+}
+
+backup_schema() {
+  manifest_value "$1/MANIFEST" schema 2>/dev/null || true
 }
 
 replace_config_string_value() {
@@ -1257,18 +1665,135 @@ replace_config_string_value() {
     fi
   done < "$file"
   (( replaced )) || { rm -f -- "$tmp"; return 1; }
-  chmod 0600 "$tmp"
-  mv -f -- "$tmp" "$file"
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$file"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+service_is_active_name() {
+  systemctl is-active --quiet "$1" 2>/dev/null
+}
+
+service_main_pid() {
+  local pid
+  pid=$(systemctl show "$1" -p MainPID --value 2>/dev/null || printf '0')
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
+  printf '%s' "$pid"
+}
+
+client_control_channel_healthy() {
+  awk '
+    /control channel established successfully/ {healthy=1; next}
+    /attempting to establish a new .*control channel/ {healthy=0; next}
+    /control channel has been closed/ {healthy=0; next}
+    /failed to .*channel/ {healthy=0; next}
+    /restarting client/ {healthy=0; next}
+    /dial (tcp|udp).*: (i\/o timeout|connection refused|network is unreachable|no route to host)/ {healthy=0; next}
+    END {exit !healthy}
+  '
+}
+
+service_health_probe() {
+  local svc="$1" config_file="$2" role endpoint port protocol transport pid
+  service_is_active_name "$svc" || return 1
+  pid=$(service_main_pid "$svc") || return 1
+  role=$(config_role_from_file "$config_file")
+  transport=$(config_value_from_file "$config_file" transport 2>/dev/null || true)
+  validate_transport "$transport" || return 1
+  if [[ "$role" == "server" ]]; then
+    endpoint=$(config_value_from_file "$config_file" bind_addr 2>/dev/null || true)
+    validate_endpoint "$endpoint" || return 1
+    port="${endpoint##*:}"; port="${port%]}"
+    protocol=$(transport_protocol "$transport")
+    check_listening_port_for_pid "$port" "$protocol" "$pid"
+  elif [[ "$role" == "client" ]]; then
+    endpoint=$(config_value_from_file "$config_file" remote_addr 2>/dev/null || true)
+    validate_endpoint "$endpoint" || return 1
+    port="${endpoint##*:}"; port="${port%]}"
+    protocol=$(transport_protocol "$transport")
+    if check_connected_peer_for_pid "$port" "$protocol" "$pid"; then
+      return 0
+    fi
+    journalctl -u "$svc" "_PID=${pid}" -n 1000 --no-pager -o cat 2>/dev/null \
+      | client_control_channel_healthy
+  else
+    return 1
+  fi
+}
+
+verify_service_health() {
+  local svc="$1" config_file="$2" timeout_seconds="${3:-15}" waited=0 first_pid second_pid
+  while (( waited < timeout_seconds )); do
+    if service_health_probe "$svc" "$config_file"; then
+      first_pid=$(service_main_pid "$svc") || return 1
+      sleep 2
+      if service_health_probe "$svc" "$config_file"; then
+        second_pid=$(service_main_pid "$svc") || return 1
+        [[ "$first_pid" == "$second_pid" ]] || { err "${svc} restarted during health verification."; return 1; }
+        return 0
+      fi
+    fi
+    sleep 1
+    ((waited += 1))
+  done
+  err "${svc} did not reach a healthy tunnel state within ${timeout_seconds}s."
+  journalctl -u "$svc" -n 40 --no-pager 2>/dev/null || true
+  return 1
+}
+
+stop_service_verified() {
+  local svc="$1" waited=0
+  service_is_active_name "$svc" || return 0
+  if ! systemctl stop "$svc"; then
+    err "Could not stop ${svc}; no files will be removed for this service."
+    return 1
+  fi
+  while (( waited < 20 )); do
+    service_is_active_name "$svc" || return 0
+    sleep 1
+    ((waited += 1))
+  done
+  err "${svc} is still active after the stop timeout."
+  return 1
+}
+
+disable_service_verified() {
+  local svc="$1"
+  systemctl is-enabled --quiet "$svc" 2>/dev/null || return 0
+  if ! systemctl disable "$svc" >/dev/null; then
+    err "Could not disable ${svc}."
+    return 1
+  fi
+  if systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+    err "${svc} is still enabled after disable."
+    return 1
+  fi
 }
 
 stop_all_managed_services() {
-  local profile svc
+  local profile svc failed=0
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" || continue
     svc=$(profile_service_name "$profile")
-    systemctl stop "$svc" 2>/dev/null || true
+    stop_service_verified "$svc" || failed=1
   done
+  (( failed == 0 ))
+}
+
+stop_all_legacy_services() {
+  local file svc failed=0
+  local -A seen=()
+  refresh_legacy_configs
+  for file in "${LEGACY_CONFIG_FILES[@]}"; do
+    while IFS= read -r svc; do
+      [[ -n "$svc" && -z "${seen[$svc]:-}" ]] || continue
+      seen[$svc]=1
+      stop_service_verified "$svc" || failed=1
+    done < <(find_services_for_config_file "$file" 2>/dev/null)
+  done
+  (( failed == 0 ))
 }
 
 managed_installation_exists() {
@@ -1278,53 +1803,79 @@ managed_installation_exists() {
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" && return 0
   done
+  refresh_legacy_configs
+  (( ${#LEGACY_CONFIG_FILES[@]} > 0 )) && return 0
   return 1
 }
 
 cleanup_failed_empty_restore() {
-  local profile svc
+  local profile svc file
+  stop_all_managed_services || return 1
+  stop_all_legacy_services || return 1
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" || continue
     svc=$(profile_service_name "$profile")
-    systemctl stop "$svc" 2>/dev/null || true
-    systemctl disable "$svc" >/dev/null 2>&1 || true
-    rm -f -- "/etc/systemd/system/${svc}"
+    disable_service_verified "$svc" || return 1
+    rm -f -- "/etc/systemd/system/${svc}" || return 1
   done
-  rm -f -- "$BACKHAUL_BIN" "${BASE_CONFIG_DIR}/config.toml" "${BASE_CONFIG_DIR}/backhaul-info.txt"
-  rm -rf -- "$PROFILES_DIR"
-  rm -f -- "$BACKHAUL_SOURCE_FILE" "$ACTIVE_PROFILE_FILE"
-  install -d -m 0700 "$PROFILES_DIR"
-  apply_profile_context "default"
-  systemctl daemon-reload || true
+  refresh_legacy_configs
+  for file in "${LEGACY_CONFIG_FILES[@]}"; do
+    while IFS= read -r svc; do
+      [[ -n "$svc" ]] || continue
+      disable_service_verified "$svc" || return 1
+      rm -f -- "/etc/systemd/system/${svc}" || return 1
+    done < <(find_services_for_config_file "$file" 2>/dev/null)
+    rm -f -- "$file" || return 1
+  done
+  rm -f -- "$BACKHAUL_BIN" "${BASE_CONFIG_DIR}/config.toml" "${BASE_CONFIG_DIR}/backhaul-info.txt" || return 1
+  rm -rf -- "$PROFILES_DIR" "${BASE_CONFIG_DIR}/legacy-tls" || return 1
+  rm -f -- "$BACKHAUL_SOURCE_FILE" "$ACTIVE_PROFILE_FILE" || return 1
+  install -d -m 0700 "$PROFILES_DIR" || return 1
+  apply_profile_context "default" || return 1
+  systemctl daemon-reload || return 1
 }
 
 apply_backup_tree() {
-  local dir="$1" source_repo profile_dir profile target_dir svc active enabled restored_active first_profile=""
+  local dir="$1" source_repo schema profile_dir profile target_dir svc active enabled restored_active first_profile=""
+  local legacy_file legacy_name legacy_target legacy_tls_dir
   validate_backup_tree "$dir" || { err "Backup validation failed: ${dir}"; return 1; }
+  schema=$(backup_schema "$dir")
   source_repo=$(manifest_value "$dir/MANIFEST" source)
   restored_active=$(manifest_value "$dir/MANIFEST" active_profile 2>/dev/null || printf 'default')
 
-  stop_all_managed_services
+  if ! stop_all_managed_services || ! stop_all_legacy_services; then
+    err "Restore aborted because one or more existing Backhaul services could not be stopped safely."
+    return 1
+  fi
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     svc=$(profile_service_name "$profile")
-    systemctl disable "$svc" >/dev/null 2>&1 || true
-    rm -f -- "/etc/systemd/system/${svc}"
+    disable_service_verified "$svc" || return 1
+    rm -f -- "/etc/systemd/system/${svc}" || return 1
   done
-  rm -f -- "${BASE_CONFIG_DIR}/config.toml" "${BASE_CONFIG_DIR}/backhaul-info.txt"
-  rm -rf -- "$PROFILES_DIR"
-  install -d -m 0700 "$BASE_CONFIG_DIR" "$PROFILES_DIR" "$STATE_DIR" "$BACKUP_DIR"
+  refresh_legacy_configs
+  for legacy_file in "${LEGACY_CONFIG_FILES[@]}"; do
+    while IFS= read -r svc; do
+      [[ -n "$svc" ]] || continue
+      disable_service_verified "$svc" || return 1
+      rm -f -- "/etc/systemd/system/${svc}" || return 1
+    done < <(find_services_for_config_file "$legacy_file" 2>/dev/null)
+    rm -f -- "$legacy_file" || return 1
+  done
+  rm -f -- "${BASE_CONFIG_DIR}/config.toml" "${BASE_CONFIG_DIR}/backhaul-info.txt" || return 1
+  rm -rf -- "$PROFILES_DIR" "${BASE_CONFIG_DIR}/legacy-tls" || return 1
+  install -d -m 0700 "$BASE_CONFIG_DIR" "$PROFILES_DIR" "$STATE_DIR" "$BACKUP_DIR" || return 1
   # Reset the mutable profile context before helpers that call
   # ensure_directories(), or a previously selected named profile can be
   # recreated as an empty stale directory during restore.
-  apply_profile_context "default"
+  apply_profile_context "default" || return 1
   if [[ -f "$dir/backhaul" ]]; then
-    install -d -m 0755 "$BACKHAUL_DIR"
-    install -m 0755 "$dir/backhaul" "${BACKHAUL_BIN}.restore"
-    mv -f -- "${BACKHAUL_BIN}.restore" "$BACKHAUL_BIN"
+    install -d -m 0755 "$BACKHAUL_DIR" || return 1
+    install -m 0755 "$dir/backhaul" "${BACKHAUL_BIN}.restore" || return 1
+    mv -f -- "${BACKHAUL_BIN}.restore" "$BACKHAUL_BIN" || return 1
   else
-    rm -f -- "$BACKHAUL_BIN"
+    rm -f -- "$BACKHAUL_BIN" || return 1
   fi
 
   for profile_dir in "$dir/profiles"/*; do
@@ -1333,18 +1884,20 @@ apply_backup_tree() {
     validate_profile_name "$profile" || return 1
     [[ -z "$first_profile" ]] && first_profile="$profile"
     if [[ "$profile" == "default" ]]; then target_dir="$BASE_CONFIG_DIR"; else target_dir="${PROFILES_DIR}/${profile}"; fi
-    install -d -m 0700 "$target_dir"
-    install -m 0600 "$profile_dir/config.toml" "$target_dir/config.toml"
-    [[ -f "$profile_dir/backhaul-info.txt" ]] && install -m 0600 "$profile_dir/backhaul-info.txt" "$target_dir/backhaul-info.txt"
+    install -d -m 0700 "$target_dir" || return 1
+    install -m 0600 "$profile_dir/config.toml" "$target_dir/config.toml" || return 1
+    if [[ -f "$profile_dir/backhaul-info.txt" ]]; then
+      install -m 0600 "$profile_dir/backhaul-info.txt" "$target_dir/backhaul-info.txt" || return 1
+    fi
     if [[ -f "$profile_dir/tls-cert.pem" && -f "$profile_dir/tls-key.pem" ]]; then
-      install -d -m 0700 "$target_dir/tls"
-      install -m 0600 "$profile_dir/tls-cert.pem" "$target_dir/tls/cert.pem"
-      install -m 0600 "$profile_dir/tls-key.pem" "$target_dir/tls/key.pem"
-      replace_config_string_value "$target_dir/config.toml" tls_cert "$target_dir/tls/cert.pem"
-      replace_config_string_value "$target_dir/config.toml" tls_key "$target_dir/tls/key.pem"
+      install -d -m 0700 "$target_dir/tls" || return 1
+      install -m 0600 "$profile_dir/tls-cert.pem" "$target_dir/tls/cert.pem" || return 1
+      install -m 0600 "$profile_dir/tls-key.pem" "$target_dir/tls/key.pem" || return 1
+      replace_config_string_value "$target_dir/config.toml" tls_cert "$target_dir/tls/cert.pem" || return 1
+      replace_config_string_value "$target_dir/config.toml" tls_key "$target_dir/tls/key.pem" || return 1
     fi
   done
-  save_backhaul_source "$source_repo"
+  persist_backhaul_source_state "$source_repo" || return 1
   if ! validate_profile_name "$restored_active" || ! profile_exists "$restored_active"; then
     restored_active="${first_profile:-default}"
   fi
@@ -1352,9 +1905,39 @@ apply_backup_tree() {
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" || continue
-    apply_profile_context "$profile"
-    write_service_file "$source_repo" || return 1
+    apply_profile_context "$profile" || return 1
+    svc=$(profile_service_name "$profile")
+    if [[ -f "$dir/services/$svc" ]]; then
+      unit_file_safe_for_restore "$dir/services/$svc" "$CONFIG_FILE" || return 1
+      install -m 0644 "$dir/services/$svc" "$SERVICE_FILE" || return 1
+    elif [[ "$source_repo" != "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+      write_service_file "$source_repo" || return 1
+    else
+      err "Backup has unknown source metadata and no saved unit for ${svc}; refusing to invent one."
+      return 1
+    fi
   done
+
+  if [[ "$schema" == "2" ]]; then
+    for legacy_file in "$dir/legacy"/*.toml; do
+      [[ -f "$legacy_file" ]] || continue
+      legacy_name="${legacy_file##*/}"
+      legacy_target="${BASE_CONFIG_DIR}/${legacy_name}"
+      install -m 0600 "$legacy_file" "$legacy_target" || return 1
+      legacy_tls_dir="$dir/legacy-tls/$legacy_name"
+      if [[ -f "$legacy_tls_dir/cert.pem" && -f "$legacy_tls_dir/key.pem" ]]; then
+        install -d -m 0700 "${BASE_CONFIG_DIR}/legacy-tls/${legacy_name}" || return 1
+        install -m 0600 "$legacy_tls_dir/cert.pem" "${BASE_CONFIG_DIR}/legacy-tls/${legacy_name}/cert.pem" || return 1
+        install -m 0600 "$legacy_tls_dir/key.pem" "${BASE_CONFIG_DIR}/legacy-tls/${legacy_name}/key.pem" || return 1
+        replace_config_string_value "$legacy_target" tls_cert "${BASE_CONFIG_DIR}/legacy-tls/${legacy_name}/cert.pem" || return 1
+        replace_config_string_value "$legacy_target" tls_key "${BASE_CONFIG_DIR}/legacy-tls/${legacy_name}/key.pem" || return 1
+      fi
+    done
+    while read -r svc active enabled legacy_name; do
+      [[ -n "$svc" ]] || continue
+      install -m 0644 "$dir/legacy-services/$svc" "/etc/systemd/system/$svc" || return 1
+    done < "$dir/legacy-services.state"
+  fi
   systemctl daemon-reload || return 1
   while read -r svc active enabled; do
     [[ -n "$svc" ]] || continue
@@ -1362,35 +1945,54 @@ apply_backup_tree() {
     elif [[ "$svc" =~ ^backhaul-([A-Za-z0-9][A-Za-z0-9_-]{0,31})\.service$ ]]; then profile="${BASH_REMATCH[1]}";
     else continue; fi
     profile_exists "$profile" || continue
-    if [[ "$enabled" == "yes" ]]; then systemctl enable "$svc" >/dev/null || return 1; else systemctl disable "$svc" >/dev/null 2>&1 || true; fi
+    if [[ "$enabled" == "yes" ]]; then systemctl enable "$svc" >/dev/null || return 1; else disable_service_verified "$svc" || return 1; fi
     if [[ "$active" == "yes" ]]; then
       systemctl start "$svc" || return 1
-      sleep 1
-      systemctl is-active --quiet "$svc" || return 1
+      verify_service_health "$svc" "$(profile_config_path "$profile")" || return 1
     fi
   done < "$dir/services.state"
-  apply_profile_context "$restored_active"
-  save_active_profile "$restored_active"
+  if [[ "$schema" == "2" ]]; then
+    while read -r svc active enabled legacy_name; do
+      [[ -n "$svc" ]] || continue
+      legacy_target="${BASE_CONFIG_DIR}/${legacy_name}"
+      if [[ "$enabled" == "yes" ]]; then systemctl enable "$svc" >/dev/null || return 1; else disable_service_verified "$svc" || return 1; fi
+      if [[ "$active" == "yes" ]]; then
+        systemctl start "$svc" || return 1
+        verify_service_health "$svc" "$legacy_target" || return 1
+      fi
+    done < "$dir/legacy-services.state"
+  fi
+  apply_profile_context "$restored_active" || return 1
+  save_active_profile "$restored_active" || return 1
   ok "Backup restored. Active profile: ${restored_active}."
 }
 
 restore_backup_dir() {
-  local dir="$1" safety=""
+  local dir="$1" safety="" schema
   validate_backup_tree "$dir" || { err "Selected backup is invalid or corrupted."; return 1; }
+  guard_shared_binary_consumers "restore the installation" || return 1
+  schema=$(backup_schema "$dir")
+  refresh_legacy_configs
+  if [[ "$schema" == "1" && ${#LEGACY_CONFIG_FILES[@]} -gt 0 ]]; then
+    err "This v3.0 backup does not contain legacy tunnels detected on the current host."
+    info "Create a new schema-2 full backup first; restore was blocked before changing any service or file."
+    return 1
+  fi
   if managed_installation_exists; then
     create_backup "pre-restore" || return 1
     safety="$LAST_BACKUP_DIR"
   fi
+  if [[ -n "$safety" ]]; then
+    begin_transaction apply_backup_tree "$safety" || return 1
+  else
+    begin_transaction cleanup_failed_empty_restore || return 1
+  fi
   if apply_backup_tree "$dir"; then
+    commit_transaction
     return 0
   fi
-  if [[ -n "$safety" ]]; then
-    err "Restore failed; rolling back to the pre-restore snapshot."
-    apply_backup_tree "$safety" || err "Automatic rollback also failed; recovery backup: ${safety}"
-  else
-    err "Restore failed on a previously empty host."
-    cleanup_failed_empty_restore
-  fi
+  rollback_active_transaction "restore failure" || true
+  [[ -n "$safety" ]] && err "Restore failed; recovery snapshot: ${safety}"
   return 1
 }
 
@@ -1431,7 +2033,7 @@ validate_backup_archive() {
   tar -tzf "$archive" >/dev/null 2>&1 || return 1
   while IFS= read -r member; do
     ((count += 1))
-    (( count <= 256 )) || return 1
+    (( count <= 2048 )) || return 1
     case "$member" in
       /*|..|../*|*/../*|*/..) return 1 ;;
     esac
@@ -1468,17 +2070,25 @@ export_backup_bundle() {
 }
 
 import_backup_bundle() {
-  local archive="$1" tmp imported
-  validate_backup_archive "$archive" || { err "Backup archive is invalid or unsafe."; return 1; }
+  local archive="$1" tmp imported private_archive
+  [[ -f "$archive" ]] || { err "Backup archive does not exist: ${archive}"; return 1; }
   tmp=$(mktemp -d /tmp/backhaul-import.XXXXXX)
-  if ! tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$tmp"; then
+  private_archive="${tmp}/input.tar.gz"
+  if ! install -m 0600 "$archive" "$private_archive"; then
+    rm -rf -- "$tmp"
+    err "Could not copy the backup into a private staging area."
+    return 1
+  fi
+  validate_backup_archive "$private_archive" || { rm -rf -- "$tmp"; err "Backup archive is invalid or unsafe."; return 1; }
+  install -d -m 0700 "$tmp/tree"
+  if ! tar --no-same-owner --no-same-permissions -xzf "$private_archive" -C "$tmp/tree"; then
     rm -rf -- "$tmp"
     return 1
   fi
-  validate_backup_tree "$tmp" || { rm -rf -- "$tmp"; err "Imported backup failed integrity or compatibility checks."; return 1; }
-  ensure_directories
+  validate_backup_tree "$tmp/tree" || { rm -rf -- "$tmp"; err "Imported backup failed integrity validation."; return 1; }
+  ensure_directories || return 1
   imported="${BACKUP_DIR}/import-$(date +%Y%m%d-%H%M%S)-$$"
-  if ! cp -a -- "$tmp" "$imported" || ! chmod -R go-rwx "$imported"; then
+  if ! cp -a -- "$tmp/tree" "$imported" || ! chmod -R go-rwx "$imported"; then
     rm -rf -- "$tmp" "$imported"
     err "Could not stage the imported backup safely."
     return 1
@@ -1553,7 +2163,16 @@ remote_migration_interactive() {
   done
   bundle="/tmp/backhaul-manager-migration-$(date +%Y%m%d-%H%M%S)-$$.tar.gz"
   export_backup_bundle "$bundle" || return 1
-  remote_file="/tmp/backhaul-manager-migration-$$.tar.gz"
+  remote_file=$(ssh -- "$target" "umask 077; mktemp /tmp/backhaul-manager-migration.XXXXXXXX.tar.gz") || {
+    rm -f -- "$bundle"
+    err "Could not allocate a private temporary file on the target host."
+    return 1
+  }
+  if [[ ! "$remote_file" =~ ^/tmp/backhaul-manager-migration\.[A-Za-z0-9]+\.tar\.gz$ ]]; then
+    rm -f -- "$bundle"
+    err "The target returned an unexpected temporary path; migration stopped."
+    return 1
+  fi
   info "Transferring the encrypted-in-transit SSH bundle to ${target}..."
   if ! scp -- "$bundle" "${target}:${remote_file}"; then
     rm -f -- "$bundle"
@@ -1635,9 +2254,13 @@ update_manager_command() {
     err "Refusing Manager downgrade: ${installed_version} -> ${candidate_version}."
     return 1
   fi
-  install -d -m 0755 "$(dirname "$MANAGER_INSTALL_PATH")"
-  install -m 0755 "$tmp" "${MANAGER_INSTALL_PATH}.new"
-  mv -f -- "${MANAGER_INSTALL_PATH}.new" "$MANAGER_INSTALL_PATH"
+  if ! install -d -m 0755 "$(dirname "$MANAGER_INSTALL_PATH")" \
+      || ! install -m 0755 "$tmp" "${MANAGER_INSTALL_PATH}.new" \
+      || ! mv -f -- "${MANAGER_INSTALL_PATH}.new" "$MANAGER_INSTALL_PATH"; then
+    rm -f -- "$tmp" "${MANAGER_INSTALL_PATH}.new"
+    err "Could not atomically install the Manager command."
+    return 1
+  fi
   rm -f -- "$tmp"
   ok "Backhaul Manager ${candidate_version} installed at ${MANAGER_INSTALL_PATH}."
   info "You can now run: backhaul-manager"
@@ -1660,7 +2283,7 @@ manager_menu() {
 }
 
 download_backhaul() {
-  local requested="$1" source_repo="${2:-$DEFAULT_BACKHAUL_SOURCE}"
+  local requested="$1" source_repo="${2:-$DEFAULT_BACKHAUL_SOURCE}" stage_path="${3:-}"
   local release_base asset url tmp_dir archive member candidate current_version="" current_source="" candidate_version
   BINARY_CHANGED=0
   if ! validate_backhaul_source "$source_repo"; then
@@ -1670,7 +2293,7 @@ download_backhaul() {
   requested=$(normalize_version "$requested")
   release_base=$(backhaul_release_base "$source_repo") || return 1
   asset=$(detect_arch_asset) || return 1
-  ensure_directories
+  ensure_directories || return 1
 
   if [[ "$requested" == "latest" ]]; then
     url="${release_base}/latest/download/${asset}"
@@ -1715,12 +2338,13 @@ download_backhaul() {
     err "The expected Backhaul archive member is not a regular file."
     return 1
   fi
-  chmod 0755 "$candidate"
-  if ! candidate_version=$("$candidate" -v 2>/dev/null); then
+  if ! chmod 0755 "$candidate" || ! candidate_version=$("$candidate" -v 2>/dev/null) \
+      || ! validate_version "$candidate_version" || [[ "$candidate_version" == "latest" ]]; then
     rm -rf -- "$tmp_dir"
     err "The downloaded binary failed its version sanity check."
     return 1
   fi
+  candidate_version=$(normalize_version "$candidate_version")
   if [[ "$requested" != "latest" && "$candidate_version" != "$requested" ]]; then
     rm -rf -- "$tmp_dir"
     err "Requested ${requested}, but the downloaded binary reports ${candidate_version}."
@@ -1730,20 +2354,40 @@ download_backhaul() {
   if [[ -x "$BACKHAUL_BIN" ]]; then
     current_version=$("$BACKHAUL_BIN" -v 2>/dev/null || true)
     if ! current_source=$(read_saved_backhaul_source 2>/dev/null); then
-      # Manager versions before source selection always installed Musixal/Backhaul.
-      current_source="$MUSIXAL_BACKHAUL_REPO"
+      current_source="$UNKNOWN_BACKHAUL_SOURCE"
     fi
   fi
   if [[ -n "$current_version" && "$current_version" == "$candidate_version" && "$current_source" == "$source_repo" ]]; then
     DOWNLOADED_VERSION="$candidate_version"
     BINARY_CHANGED=0
+    if [[ -n "$stage_path" ]]; then
+      install -m 0755 "$candidate" "$stage_path" || { rm -rf -- "$tmp_dir"; return 1; }
+    fi
     rm -rf -- "$tmp_dir"
     ok "Backhaul ${candidate_version} from ${source_repo} is already installed."
     return 0
   fi
 
-  install -m 0755 "$candidate" "${BACKHAUL_BIN}.new"
-  mv -f -- "${BACKHAUL_BIN}.new" "$BACKHAUL_BIN"
+  if [[ -n "$stage_path" ]]; then
+    if ! install -m 0755 "$candidate" "$stage_path"; then
+      rm -rf -- "$tmp_dir"
+      err "Could not stage the downloaded Backhaul binary."
+      return 1
+    fi
+    DOWNLOADED_VERSION="$candidate_version"
+    BINARY_CHANGED=1
+    rm -rf -- "$tmp_dir"
+    ok "Prepared Backhaul ${candidate_version}; the running installation is unchanged."
+    return 0
+  fi
+
+  if ! install -m 0755 "$candidate" "${BACKHAUL_BIN}.new" \
+      || ! mv -f -- "${BACKHAUL_BIN}.new" "$BACKHAUL_BIN"; then
+    rm -f -- "${BACKHAUL_BIN}.new"
+    rm -rf -- "$tmp_dir"
+    err "Could not atomically install the Backhaul binary."
+    return 1
+  fi
   DOWNLOADED_VERSION="$candidate_version"
   BINARY_CHANGED=1
   rm -rf -- "$tmp_dir"
@@ -1755,28 +2399,33 @@ write_service_file() {
   validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
   unit_dir=$(dirname "$SERVICE_FILE")
   [[ -d "$unit_dir" ]] || { err "systemd unit directory does not exist: ${unit_dir}"; return 1; }
-  tmp=$(mktemp "${unit_dir}/.backhaul.service.XXXXXX")
-  cat > "$tmp" <<EOF
-[Unit]
-Description=Backhaul Reverse Tunnel Service
-Documentation=https://github.com/${source_repo}
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=${BACKHAUL_BIN} -c ${CONFIG_FILE}
-Restart=on-failure
-RestartSec=3s
-TimeoutStopSec=20s
-LimitNOFILE=1048576
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  chmod 0644 "$tmp"
-  mv -f -- "$tmp" "$SERVICE_FILE"
+  tmp=$(mktemp "${unit_dir}/.backhaul.service.XXXXXX") || return 1
+  if ! {
+    printf '[Unit]\n'
+    printf 'Description=Backhaul Reverse Tunnel Service\n'
+    printf 'Documentation=https://github.com/%s\n' "$source_repo"
+    printf 'Wants=network-online.target\n'
+    printf 'After=network-online.target\n\n'
+    printf '[Service]\n'
+    printf 'Type=simple\n'
+    printf 'ExecStart=%s -c %s\n' "$BACKHAUL_BIN" "$CONFIG_FILE"
+    printf 'Restart=on-failure\n'
+    printf 'RestartSec=3s\n'
+    printf 'TimeoutStopSec=20s\n'
+    printf 'LimitNOFILE=1048576\n'
+    printf 'UMask=0077\n\n'
+    printf '[Install]\n'
+    printf 'WantedBy=multi-user.target\n'
+  } > "$tmp"; then
+    rm -f -- "$tmp"
+    err "Could not write the systemd unit staging file."
+    return 1
+  fi
+  if ! chmod 0644 "$tmp" || ! mv -f -- "$tmp" "$SERVICE_FILE"; then
+    rm -f -- "$tmp"
+    err "Could not atomically install ${SERVICE_NAME}."
+    return 1
+  fi
 }
 
 write_server_config() {
@@ -1787,8 +2436,8 @@ write_server_config() {
   escaped_key=$(toml_escape "$tls_key")
   escaped_web_user=$(toml_escape "$ADV_WEB_USERNAME")
   escaped_web_password=$(toml_escape "$ADV_WEB_PASSWORD")
-  tmp=$(mktemp "${CONFIG_DIR}/.config.toml.XXXXXX")
-  {
+  tmp=$(mktemp "${CONFIG_DIR}/.config.toml.XXXXXX") || return 1
+  if ! {
     printf '[server]\n'
     printf 'bind_addr = "0.0.0.0:%s"\n' "$control_port"
     printf 'transport = "%s"\n' "$transport"
@@ -1835,9 +2484,16 @@ write_server_config() {
       printf '  "%s",\n' "$rule"
     done
     printf ']\n'
-  } > "$tmp"
-  chmod 0600 "$tmp"
-  mv -f -- "$tmp" "$CONFIG_FILE"
+  } > "$tmp"; then
+    rm -f -- "$tmp"
+    err "Could not write the server configuration staging file."
+    return 1
+  fi
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$CONFIG_FILE"; then
+    rm -f -- "$tmp"
+    err "Could not atomically install the server configuration."
+    return 1
+  fi
 }
 
 write_client_config() {
@@ -1848,8 +2504,8 @@ write_client_config() {
   escaped_edge=$(toml_escape "$edge_ip")
   escaped_web_user=$(toml_escape "$ADV_WEB_USERNAME")
   escaped_web_password=$(toml_escape "$ADV_WEB_PASSWORD")
-  tmp=$(mktemp "${CONFIG_DIR}/.config.toml.XXXXXX")
-  {
+  tmp=$(mktemp "${CONFIG_DIR}/.config.toml.XXXXXX") || return 1
+  if ! {
     printf '[client]\n'
     printf 'remote_addr = "%s"\n' "$escaped_remote"
     printf 'transport = "%s"\n' "$transport"
@@ -1885,9 +2541,16 @@ write_client_config() {
       printf 'web_password = "%s"\n' "$escaped_web_password"
     fi
     printf 'log_level = "info"\n'
-  } > "$tmp"
-  chmod 0600 "$tmp"
-  mv -f -- "$tmp" "$CONFIG_FILE"
+  } > "$tmp"; then
+    rm -f -- "$tmp"
+    err "Could not write the client configuration staging file."
+    return 1
+  fi
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$CONFIG_FILE"; then
+    rm -f -- "$tmp"
+    err "Could not atomically install the client configuration."
+    return 1
+  fi
 }
 
 service_is_active() {
@@ -1895,98 +2558,55 @@ service_is_active() {
 }
 
 start_and_verify_service() {
-  systemctl daemon-reload
-  systemctl enable "$SERVICE_NAME" >/dev/null
+  if ! systemctl daemon-reload; then
+    err "systemd daemon-reload failed; ${SERVICE_NAME} was not restarted."
+    return 1
+  fi
+  if ! systemctl enable "$SERVICE_NAME" >/dev/null; then
+    err "Could not enable ${SERVICE_NAME} at boot."
+    return 1
+  fi
   if ! systemctl restart "$SERVICE_NAME"; then
     err "systemd could not restart ${SERVICE_NAME}."
     journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
     return 1
   fi
-  local _
-  for _ in 1 2 3 4 5; do
-    if service_is_active; then
-      ok "${SERVICE_NAME} is active."
-      return 0
-    fi
-    sleep 1
-  done
-  err "${SERVICE_NAME} failed to become active."
-  journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
-  return 1
+  if ! verify_service_health "$SERVICE_NAME" "$CONFIG_FILE" 20; then
+    err "${SERVICE_NAME} started but the tunnel did not become healthy."
+    return 1
+  fi
+  ok "${SERVICE_NAME} is active and tunnel health is verified."
 }
 
 rollback_install() {
   local config_snapshot="$1" service_snapshot="$2" binary_snapshot="$3" was_active="$4" was_enabled="$5" source_snapshot="${6:-}"
+  local failed=0
   warn "Restoring the previous working installation..."
-  restore_file "$CONFIG_FILE" "$config_snapshot"
-  restore_file "$SERVICE_FILE" "$service_snapshot"
-  restore_file "$BACKHAUL_SOURCE_FILE" "$source_snapshot"
+  restore_file "$CONFIG_FILE" "$config_snapshot" || failed=1
+  restore_file "$SERVICE_FILE" "$service_snapshot" || failed=1
+  restore_file "$BACKHAUL_SOURCE_FILE" "$source_snapshot" || failed=1
   if [[ -n "$binary_snapshot" && -f "$binary_snapshot" ]]; then
-    cp -a -- "$binary_snapshot" "$BACKHAUL_BIN"
+    cp -a -- "$binary_snapshot" "$BACKHAUL_BIN" || failed=1
   elif [[ -z "$config_snapshot" ]]; then
-    rm -f -- "$BACKHAUL_BIN"
+    rm -f -- "$BACKHAUL_BIN" || failed=1
   fi
-  systemctl daemon-reload || true
-  if [[ "$was_enabled" != "yes" ]]; then
-    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl daemon-reload || failed=1
+  if [[ "$was_enabled" == "yes" && -f "$SERVICE_FILE" ]]; then
+    systemctl enable "$SERVICE_NAME" >/dev/null || failed=1
+  else
+    disable_service_verified "$SERVICE_NAME" || failed=1
   fi
   if [[ "$was_active" == "yes" && -f "$SERVICE_FILE" ]]; then
-    systemctl restart "$SERVICE_NAME" || true
+    if ! systemctl restart "$SERVICE_NAME" || ! verify_service_health "$SERVICE_NAME" "$CONFIG_FILE" 20; then failed=1; fi
   else
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    stop_service_verified "$SERVICE_NAME" || failed=1
   fi
-  ok "Rollback completed."
-}
-
-handle_old_services() {
-  local keywords='paqet|backhaul|gost|chisel|rathole|wstunnel|frps?|frpc?|v2ray|xray|sing-?box|hysteria|shadowsocks|wireguard|openvpn|nps|ngrok|udp2raw|ligolo'
-  local -a running=() candidates=() selected=()
-  local svc input item idx managed_profile
-  mapfile -t running < <(systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | awk '{print $1}')
-  for svc in "${running[@]}"; do
-    [[ "$svc" == "$SERVICE_NAME" ]] && continue
-    if managed_profile=$(profile_from_service_name "$svc" 2>/dev/null) && profile_exists "$managed_profile"; then
-      continue
-    fi
-    if [[ "$svc" =~ $keywords ]]; then
-      candidates+=("$svc")
-    fi
-  done
-  (( ${#candidates[@]} > 0 )) || return 0
-
-  printf '\n%bPossible conflicting tunnel services:%b\n' "$C_BOLD" "$C_RESET"
-  for idx in "${!candidates[@]}"; do
-    printf '  %d) %s\n' "$((idx + 1))" "${candidates[$idx]}"
-  done
-  input=$(tty_read "Numbers to stop/disable (comma-separated, Enter = skip): ")
-  [[ -n "$input" ]] || return 0
-  IFS=',' read -ra selected <<< "$input"
-  local -a targets=()
-  local -A seen=()
-  for item in "${selected[@]}"; do
-    item=$(trim "$item")
-    if [[ "$item" =~ ^[0-9]+$ ]]; then
-      idx=$((10#$item - 1))
-      if (( idx >= 0 && idx < ${#candidates[@]} )); then
-        svc="${candidates[$idx]}"
-        [[ -n "${seen[$svc]:-}" ]] || { targets+=("$svc"); seen[$svc]=1; }
-      else
-        warn "Ignoring invalid service number: ${item}"
-      fi
-    else
-      warn "Ignoring invalid selection: ${item}"
-    fi
-  done
-  (( ${#targets[@]} > 0 )) || return 0
-  printf 'Selected: %s\n' "${targets[*]}"
-  if ! ask_yn "Stop and disable these services?" "n"; then
-    info "Old-service cleanup skipped."
+  if (( failed == 0 )); then
+    ok "Rollback completed."
     return 0
   fi
-  for svc in "${targets[@]}"; do
-    systemctl stop "$svc" || warn "Could not stop ${svc}."
-    systemctl disable "$svc" >/dev/null 2>&1 || true
-  done
+  err "Rollback restored as much state as possible but one or more recovery steps failed."
+  return 1
 }
 
 port_conflict_details() {
@@ -2056,6 +2676,30 @@ check_listening_port() {
   fi
 }
 
+check_listening_port_for_pid() {
+  local port="$1" protocol="${2:-tcp}" pid="$3"
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
+  if [[ "$protocol" == "udp" ]]; then
+    ss -H -lunp 2>/dev/null | awk -v p=":${port}" -v marker="pid=${pid}," \
+      '$4 ~ p"$" && index($0, marker) {found=1} END {exit !found}'
+  else
+    ss -H -ltnp 2>/dev/null | awk -v p=":${port}" -v marker="pid=${pid}," \
+      '$4 ~ p"$" && index($0, marker) {found=1} END {exit !found}'
+  fi
+}
+
+check_connected_peer_for_pid() {
+  local port="$1" protocol="${2:-tcp}" pid="$3"
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
+  if [[ "$protocol" == "udp" ]]; then
+    ss -H -unp 2>/dev/null | awk -v p=":${port}" -v marker="pid=${pid}," \
+      '($5 ~ p"$" || $6 ~ p"$") && index($0, marker) {found=1} END {exit !found}'
+  else
+    ss -H -ntp state established 2>/dev/null | awk -v p=":${port}" -v marker="pid=${pid}," \
+      '($4 ~ p"$" || $5 ~ p"$") && index($0, marker) {found=1} END {exit !found}'
+  fi
+}
+
 firewall_hint() {
   local protocol="$1"; shift
   local p
@@ -2070,8 +2714,8 @@ firewall_hint() {
 }
 
 write_server_info() {
-  local control_port="$1" transport="$2" token="$3" source_repo="$4"
-  {
+  local control_port="$1" transport="$2" token="$3" source_repo="$4" tmp="${INFO_FILE}.tmp.$$"
+  if ! {
     printf 'Backhaul Manager - Server (Iran)\n'
     printf 'Generated     : %s\n\n' "$(date -Is 2>/dev/null || date)"
     printf 'Backhaul      : %s\n' "$DOWNLOADED_VERSION"
@@ -2090,13 +2734,19 @@ write_server_info() {
     fi
     printf 'Config        : %s\n' "$CONFIG_FILE"
     printf 'Service       : %s\n' "$SERVICE_NAME"
-  } > "$INFO_FILE"
-  chmod 0600 "$INFO_FILE"
+  } > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$INFO_FILE"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
 }
 
 write_client_info() {
-  local remote_addr="$1" transport="$2" source_repo="$3"
-  {
+  local remote_addr="$1" transport="$2" source_repo="$3" tmp="${INFO_FILE}.tmp.$$"
+  if ! {
     printf 'Backhaul Manager - Client (Foreign)\n'
     printf 'Generated     : %s\n\n' "$(date -Is 2>/dev/null || date)"
     printf 'Backhaul      : %s\n' "$DOWNLOADED_VERSION"
@@ -2113,8 +2763,14 @@ write_client_info() {
     fi
     printf 'Config        : %s\n' "$CONFIG_FILE"
     printf 'Service       : %s\n' "$SERVICE_NAME"
-  } > "$INFO_FILE"
-  chmod 0600 "$INFO_FILE"
+  } > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$INFO_FILE"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
 }
 
 print_server_secret_summary() {
@@ -2137,6 +2793,12 @@ configure_server() {
   reset_config_options
   if [[ -x "$BACKHAUL_BIN" ]]; then
     source_repo=$(current_backhaul_source)
+    if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+      warn "The existing Backhaul binary has no trustworthy source metadata."
+      info "Select the repository that actually supplied the currently installed binary."
+      source_repo=$(choose_backhaul_source)
+      claim_backhaul_source "$source_repo" || return 1
+    fi
     version=$("$BACKHAUL_BIN" -v 2>/dev/null || printf 'latest')
     info "Shared Backhaul binary: ${source_repo} ${version}. Use Source migration/Upgrade to change it."
   else
@@ -2162,32 +2824,35 @@ configure_server() {
     configure_advanced_options "server" "$transport" "$source_repo" || return 1
   fi
 
-  handle_old_services
   protocol=$(transport_protocol "$transport")
   if ! preflight_server_ports "$control_port" "$protocol"; then
     info "Configuration cancelled before making installation changes."
     return 1
   fi
-  ensure_directories
+  ensure_directories || return 1
   service_is_active && was_active="yes"
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && was_enabled="yes"
-  snapshot_file "$CONFIG_FILE" "config" config_snapshot
-  snapshot_file "$SERVICE_FILE" "service" service_snapshot
-  snapshot_file "$BACKHAUL_BIN" "backhaul-bin" binary_snapshot
-  snapshot_file "$BACKHAUL_SOURCE_FILE" "source" source_snapshot
+  if ! snapshot_file "$CONFIG_FILE" "config" config_snapshot \
+      || ! snapshot_file "$SERVICE_FILE" "service" service_snapshot \
+      || ! snapshot_file "$BACKHAUL_BIN" "backhaul-bin" binary_snapshot \
+      || ! snapshot_file "$BACKHAUL_SOURCE_FILE" "source" source_snapshot; then
+    return 1
+  fi
+  begin_transaction rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot" || return 1
   if ! download_backhaul "$version" "$source_repo"; then
+    rollback_active_transaction "server binary preparation failure" || true
     return 1
   fi
   if ! write_server_config "$control_port" "$transport" "$token" "$tls_cert" "$tls_key" "$source_repo"; then
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "server config write failure" || true
     return 1
   fi
   if ! write_service_file "$source_repo"; then
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "server unit write failure" || true
     return 1
   fi
   if ! start_and_verify_service; then
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "server health failure" || true
     return 1
   fi
 
@@ -2204,10 +2869,14 @@ configure_server() {
   fi
   if ! save_backhaul_source "$source_repo"; then
     err "Configuration succeeded but source state could not be persisted; rolling back for consistency."
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "source-state failure" || true
     return 1
   fi
-  write_server_info "$control_port" "$transport" "$token" "$source_repo"
+  if ! write_server_info "$control_port" "$transport" "$token" "$source_repo"; then
+    rollback_active_transaction "server metadata write failure" || true
+    return 1
+  fi
+  commit_transaction
   print_server_secret_summary "$token" "$control_port" "$transport"
   ok "Server configuration completed."
 }
@@ -2220,6 +2889,12 @@ configure_client() {
   reset_config_options
   if [[ -x "$BACKHAUL_BIN" ]]; then
     source_repo=$(current_backhaul_source)
+    if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+      warn "The existing Backhaul binary has no trustworthy source metadata."
+      info "Select the repository that actually supplied the currently installed binary."
+      source_repo=$(choose_backhaul_source)
+      claim_backhaul_source "$source_repo" || return 1
+    fi
     version=$("$BACKHAUL_BIN" -v 2>/dev/null || printf 'latest')
     info "Shared Backhaul binary: ${source_repo} ${version}. Use Source migration/Upgrade to change it."
   else
@@ -2243,27 +2918,30 @@ configure_client() {
     configure_advanced_options "client" "$transport" "$source_repo" || return 1
   fi
 
-  handle_old_services
-  ensure_directories
+  ensure_directories || return 1
   service_is_active && was_active="yes"
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && was_enabled="yes"
-  snapshot_file "$CONFIG_FILE" "config" config_snapshot
-  snapshot_file "$SERVICE_FILE" "service" service_snapshot
-  snapshot_file "$BACKHAUL_BIN" "backhaul-bin" binary_snapshot
-  snapshot_file "$BACKHAUL_SOURCE_FILE" "source" source_snapshot
+  if ! snapshot_file "$CONFIG_FILE" "config" config_snapshot \
+      || ! snapshot_file "$SERVICE_FILE" "service" service_snapshot \
+      || ! snapshot_file "$BACKHAUL_BIN" "backhaul-bin" binary_snapshot \
+      || ! snapshot_file "$BACKHAUL_SOURCE_FILE" "source" source_snapshot; then
+    return 1
+  fi
+  begin_transaction rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot" || return 1
   if ! download_backhaul "$version" "$source_repo"; then
+    rollback_active_transaction "client binary preparation failure" || true
     return 1
   fi
   if ! write_client_config "$remote_addr" "$transport" "$token" "$edge_ip" "$source_repo"; then
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "client config write failure" || true
     return 1
   fi
   if ! write_service_file "$source_repo"; then
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "client unit write failure" || true
     return 1
   fi
   if ! start_and_verify_service; then
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "client health failure" || true
     return 1
   fi
 
@@ -2286,10 +2964,14 @@ configure_client() {
   fi
   if ! save_backhaul_source "$source_repo"; then
     err "Configuration succeeded but source state could not be persisted; rolling back for consistency."
-    rollback_install "$config_snapshot" "$service_snapshot" "$binary_snapshot" "$was_active" "$was_enabled" "$source_snapshot"
+    rollback_active_transaction "source-state failure" || true
     return 1
   fi
-  write_client_info "$remote_addr" "$transport" "$source_repo"
+  if ! write_client_info "$remote_addr" "$transport" "$source_repo"; then
+    rollback_active_transaction "client metadata write failure" || true
+    return 1
+  fi
+  commit_transaction
   ok "Client configuration completed."
 }
 
@@ -2389,19 +3071,24 @@ list_profiles() {
 
 rollback_legacy_adoption() {
   local target_service="$1" target_snapshot="$2" legacy_service="$3" was_active="$4" was_enabled="$5"
-  local old_profile="$6" target_dir="$7" target_unit="/etc/systemd/system/${target_service}"
-  systemctl stop "$target_service" 2>/dev/null || true
-  restore_file "$target_unit" "$target_snapshot"
-  systemctl daemon-reload || true
+  local old_profile="$6" target_dir="$7" legacy_config="$8" target_unit="/etc/systemd/system/${target_service}"
+  local failed=0
+  stop_service_verified "$target_service" || failed=1
+  restore_file "$target_unit" "$target_snapshot" || failed=1
+  systemctl daemon-reload || failed=1
   if [[ -n "$legacy_service" ]]; then
-    if [[ "$was_enabled" == "yes" ]]; then systemctl enable "$legacy_service" >/dev/null 2>&1 || true;
-    else systemctl disable "$legacy_service" >/dev/null 2>&1 || true; fi
-    if [[ "$was_active" == "yes" ]]; then systemctl restart "$legacy_service" >/dev/null 2>&1 || true;
-    else systemctl stop "$legacy_service" 2>/dev/null || true; fi
+    if [[ "$was_enabled" == "yes" ]]; then systemctl enable "$legacy_service" >/dev/null || failed=1;
+    else disable_service_verified "$legacy_service" || failed=1; fi
+    if [[ "$was_active" == "yes" ]]; then
+      if ! systemctl restart "$legacy_service" >/dev/null || ! verify_service_health "$legacy_service" "$legacy_config" 20; then failed=1; fi
+    else
+      stop_service_verified "$legacy_service" || failed=1
+    fi
   fi
-  rm -rf -- "$target_dir"
-  apply_profile_context "$old_profile"
-  save_active_profile "$old_profile" || true
+  rm -rf -- "$target_dir" || failed=1
+  apply_profile_context "$old_profile" || failed=1
+  save_active_profile "$old_profile" || failed=1
+  (( failed == 0 ))
 }
 
 adopt_legacy_config() {
@@ -2426,12 +3113,17 @@ adopt_legacy_config() {
   fi
   [[ -x "$BACKHAUL_BIN" ]] || { err "Backhaul binary is missing; install/configure Backhaul before adopting legacy tunnels."; return 1; }
   source_repo=$(current_backhaul_source)
+  if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+    err "Cannot adopt a legacy tunnel until the shared binary source is identified."
+    info "Use Backhaul maintenance -> Record current source first."
+    return 1
+  fi
   if ! check_config_compatibility_file "$source_repo" "$legacy_file"; then
     err "Legacy config is incompatible with ${source_repo}: ${COMPAT_UNSUPPORTED_KEYS[*]}"
     return 1
   fi
 
-  ensure_directories
+  ensure_directories || return 1
   mapfile -t legacy_services < <(find_services_for_config_file "$legacy_file" 2>/dev/null)
   if (( ${#legacy_services[@]} > 1 )); then
     err "Cannot auto-adopt: multiple systemd services reference this legacy config: ${legacy_services[*]}"
@@ -2454,54 +3146,65 @@ adopt_legacy_config() {
   fi
   [[ -n "$legacy_service" ]] && systemctl is-active --quiet "$legacy_service" 2>/dev/null && was_active="yes"
   [[ -n "$legacy_service" ]] && systemctl is-enabled --quiet "$legacy_service" 2>/dev/null && was_enabled="yes"
-  snapshot_file "$target_unit" "legacy-adopt-unit" target_snapshot
+  snapshot_file "$target_unit" "legacy-adopt-unit" target_snapshot || return 1
 
   target_dir="${PROFILES_DIR}/${name}"
+  begin_transaction rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir" "$legacy_file" || return 1
   install -d -m 0700 "$target_dir"
   if ! install -m 0600 "$legacy_file" "$target_dir/config.toml"; then
-    rm -rf -- "$target_dir"
+    rollback_active_transaction "legacy config copy failure" || true
     return 1
   fi
-  apply_profile_context "$name" || return 1
+  if ! apply_profile_context "$name"; then
+    rollback_active_transaction "profile context failure" || true
+    return 1
+  fi
   if ! write_service_file "$source_repo" || ! systemctl daemon-reload; then
-    rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+    rollback_active_transaction "legacy adoption unit failure" || true
     return 1
   fi
 
   if [[ -n "$legacy_service" && "$legacy_service" != "$target_service" && "$was_active" == "yes" ]]; then
-    if ! systemctl stop "$legacy_service"; then
-      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+    if ! stop_service_verified "$legacy_service"; then
+      rollback_active_transaction "legacy service stop failure" || true
       err "Could not stop the legacy service; adoption rolled back."
       return 1
     fi
   fi
   if [[ "$was_enabled" == "yes" ]]; then
     if ! systemctl enable "$target_service" >/dev/null; then
-      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+      rollback_active_transaction "managed service enable failure" || true
       return 1
     fi
   else
-    systemctl disable "$target_service" >/dev/null 2>&1 || true
+    if ! disable_service_verified "$target_service"; then
+      rollback_active_transaction "managed service disable failure" || true
+      return 1
+    fi
   fi
   if [[ "$was_active" == "yes" ]]; then
-    if ! systemctl restart "$target_service" || ! sleep 1 || ! systemctl is-active --quiet "$target_service"; then
-      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+    if ! systemctl restart "$target_service" || ! verify_service_health "$target_service" "$target_dir/config.toml" 20; then
+      rollback_active_transaction "managed replacement health failure" || true
       err "Managed replacement did not become active; adoption rolled back."
       return 1
     fi
   fi
   if [[ -n "$legacy_service" && "$legacy_service" != "$target_service" && "$was_enabled" == "yes" ]]; then
     if ! systemctl disable "$legacy_service" >/dev/null; then
-      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+      rollback_active_transaction "legacy disable failure" || true
       err "Could not disable the old legacy service; adoption rolled back."
       return 1
     fi
   fi
   if ! save_active_profile "$name"; then
-    rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+    rollback_active_transaction "active-profile state failure" || true
     return 1
   fi
 
+  # The new service and selected-profile state are now healthy and durable.
+  # Commit before archiving the legacy file so SIGINT can never leave the
+  # rollback service pointing at a path that has already been moved away.
+  commit_transaction
   if [[ -n "$legacy_service" ]]; then
     archived="${legacy_file}.adopted.$(date +%Y%m%d-%H%M%S)"
     if mv -- "$legacy_file" "$archived"; then
@@ -2553,13 +3256,20 @@ select_profile_interactive() {
 }
 
 create_profile_interactive() {
-  local name old_profile="$ACTIVE_PROFILE" role_choice rc=0
+  local name old_profile="$ACTIVE_PROFILE" role_choice rc=0 candidate_service candidate_unit
   name=$(ask_profile_name "New profile name")
   profile_exists "$name" && { err "Profile '${name}' already exists."; return 1; }
+  candidate_service=$(profile_service_name "$name") || return 1
+  candidate_unit="/etc/systemd/system/${candidate_service}"
+  if [[ -e "$candidate_unit" ]]; then
+    err "Cannot create profile '${name}': ${candidate_service} already exists outside this profile."
+    info "Inspect/adopt the existing tunnel instead of overwriting its systemd unit."
+    return 1
+  fi
   printf '\nRole:\n  1) Iran server\n  2) Foreign client\n'
   role_choice=$(tty_read "Role [1]: ")
   apply_profile_context "$name" || return 1
-  ensure_directories
+  ensure_directories || { apply_profile_context "$old_profile"; return 1; }
   case "${role_choice:-1}" in
     1) configure_server || rc=$? ;;
     2) configure_client || rc=$? ;;
@@ -2575,19 +3285,32 @@ create_profile_interactive() {
     systemctl daemon-reload || true
     return "$rc"
   fi
-  save_active_profile "$name"
+  save_active_profile "$name" || return 1
   ok "Profile '${name}' created and selected."
 }
 
 clone_active_profile() {
-  local name target_dir source_repo tls_cert tls_key old_profile="$ACTIVE_PROFILE"
+  local name target_dir source_repo tls_cert tls_key old_profile="$ACTIVE_PROFILE" target_service target_unit
   profile_exists "$ACTIVE_PROFILE" || { err "The active profile is not configured."; return 1; }
   name=$(ask_profile_name "Clone name")
   profile_exists "$name" && { err "Profile '${name}' already exists."; return 1; }
+  target_service=$(profile_service_name "$name") || return 1
+  target_unit="/etc/systemd/system/${target_service}"
+  if [[ -e "$target_unit" ]]; then
+    err "Cannot clone to '${name}': ${target_service} already exists outside this profile."
+    return 1
+  fi
   target_dir="${PROFILES_DIR}/${name}"
-  install -d -m 0700 "$target_dir"
-  install -m 0600 "$CONFIG_FILE" "$target_dir/config.toml"
-  [[ -f "$INFO_FILE" ]] && install -m 0600 "$INFO_FILE" "$target_dir/backhaul-info.txt"
+  if ! install -d -m 0700 "$target_dir" || ! install -m 0600 "$CONFIG_FILE" "$target_dir/config.toml"; then
+    rm -rf -- "$target_dir"
+    err "Could not create the clone staging profile."
+    return 1
+  fi
+  if [[ -f "$INFO_FILE" ]] && ! install -m 0600 "$INFO_FILE" "$target_dir/backhaul-info.txt"; then
+    rm -rf -- "$target_dir"
+    err "Could not clone the profile metadata."
+    return 1
+  fi
   tls_cert=$(config_value_from_file "$CONFIG_FILE" tls_cert 2>/dev/null || true)
   tls_key=$(config_value_from_file "$CONFIG_FILE" tls_key 2>/dev/null || true)
   if [[ -n "$tls_cert" || -n "$tls_key" ]]; then
@@ -2596,9 +3319,13 @@ clone_active_profile() {
       err "The source profile references unreadable TLS files; clone cancelled."
       return 1
     fi
-    install -d -m 0700 "$target_dir/tls"
-    install -m 0600 "$tls_cert" "$target_dir/tls/cert.pem"
-    install -m 0600 "$tls_key" "$target_dir/tls/key.pem"
+    if ! install -d -m 0700 "$target_dir/tls" \
+        || ! install -m 0600 "$tls_cert" "$target_dir/tls/cert.pem" \
+        || ! install -m 0600 "$tls_key" "$target_dir/tls/key.pem"; then
+      rm -rf -- "$target_dir"
+      err "Could not copy TLS material into the cloned profile."
+      return 1
+    fi
     if ! replace_config_string_value "$target_dir/config.toml" tls_cert "$target_dir/tls/cert.pem" ||
        ! replace_config_string_value "$target_dir/config.toml" tls_key "$target_dir/tls/key.pem"; then
       rm -rf -- "$target_dir"
@@ -2628,7 +3355,7 @@ clone_active_profile() {
 }
 
 delete_profile_interactive() {
-  local choice idx profile svc fallback="" candidate
+  local choice idx profile svc fallback="" candidate safety unit_file config_file
   refresh_profile_names
   list_profiles
   choice=$(tty_read "Profile number to delete (Enter = cancel): ")
@@ -2640,21 +3367,38 @@ delete_profile_interactive() {
   [[ "$profile" != "default" ]] || { err "The default profile cannot be deleted here; use Uninstall for the complete installation."; return 1; }
   ask_yn "Permanently delete profile '${profile}' and its service?" "n" || return 0
   svc=$(profile_service_name "$profile")
-  systemctl stop "$svc" 2>/dev/null || true
-  systemctl disable "$svc" >/dev/null 2>&1 || true
-  rm -f -- "/etc/systemd/system/${svc}"
-  rm -rf -- "${PROFILES_DIR:?}/${profile}"
-  systemctl daemon-reload || true
+  unit_file="/etc/systemd/system/${svc}"
+  config_file=$(profile_config_path "$profile") || return 1
+  if [[ -e "$unit_file" ]] && ! service_uses_config_file "$svc" "$unit_file" "$config_file"; then
+    err "Refusing to delete ${svc}: its effective ExecStart does not use ${config_file}."
+    info "Resolve the service/profile ownership mismatch first; nothing was changed."
+    return 1
+  fi
+  create_backup "pre-delete-${profile}" || return 1
+  safety="$LAST_BACKUP_DIR"
+  begin_transaction apply_backup_tree "$safety" || return 1
+  if ! stop_service_verified "$svc" || ! disable_service_verified "$svc"; then
+    rollback_active_transaction "profile delete stop/disable failure" || true
+    return 1
+  fi
+  if ! rm -f -- "/etc/systemd/system/${svc}" || ! rm -rf -- "${PROFILES_DIR:?}/${profile}" || ! systemctl daemon-reload; then
+    rollback_active_transaction "profile delete filesystem failure" || true
+    return 1
+  fi
   if [[ "$ACTIVE_PROFILE" == "$profile" ]]; then
     refresh_profile_names
     for candidate in "${PROFILE_NAMES[@]}"; do
       if profile_exists "$candidate"; then fallback="$candidate"; break; fi
     done
     fallback="${fallback:-default}"
-    apply_profile_context "$fallback"
-    save_active_profile "$fallback"
+    if ! apply_profile_context "$fallback" || ! save_active_profile "$fallback"; then
+      rollback_active_transaction "profile selection update failure" || true
+      return 1
+    fi
   fi
+  commit_transaction
   ok "Profile '${profile}' deleted."
+  info "Recovery snapshot: ${safety}"
 }
 
 profiles_menu() {
@@ -2681,7 +3425,39 @@ profiles_menu() {
 config_value_from_file() {
   local file="$1" key="$2"
   [[ -f "$file" ]] || return 1
-  sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$/\1/p" "$file" | head -n 1
+  [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  awk -v wanted="$key" '
+    function trim(s) {
+      sub(/^[ \t]+/, "", s)
+      sub(/[ \t]+$/, "", s)
+      return s
+    }
+    /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ {
+      line=$0
+      eq=index(line, "=")
+      lhs=trim(substr(line, 1, eq - 1))
+      if (lhs != wanted) next
+      value=substr(line, eq + 1)
+      out=""; in_double=0; in_single=0; escaped=0
+      for (i=1; i<=length(value); i++) {
+        ch=substr(value, i, 1)
+        if (escaped) { out=out ch; escaped=0; continue }
+        if (in_double && ch == "\\") { out=out ch; escaped=1; continue }
+        if (!in_single && ch == "\"") { in_double=!in_double; out=out ch; continue }
+        if (!in_double && ch == sprintf("%c", 39)) { in_single=!in_single; out=out ch; continue }
+        if (!in_double && !in_single && ch == "#") break
+        out=out ch
+      }
+      value=trim(out)
+      single=sprintf("%c", 39)
+      if (length(value) >= 2 && ((substr(value,1,1) == "\"" && substr(value,length(value),1) == "\"") ||
+          (substr(value,1,1) == single && substr(value,length(value),1) == single))) {
+        value=substr(value, 2, length(value) - 2)
+      }
+      print value
+      exit
+    }
+  ' "$file"
 }
 
 config_value() {
@@ -2691,9 +3467,15 @@ config_value() {
 config_role_from_file() {
   local file="$1"
   [[ -f "$file" ]] || { printf 'not configured'; return; }
-  if grep -qE '^\[server\][[:space:]]*$' "$file"; then printf 'server';
-  elif grep -qE '^\[client\][[:space:]]*$' "$file"; then printf 'client';
-  else printf 'unknown'; fi
+  awk '
+    /^[ \t]*\[[ \t]*server[ \t]*\][ \t]*(#.*)?$/ {server=1}
+    /^[ \t]*\[[ \t]*client[ \t]*\][ \t]*(#.*)?$/ {client=1}
+    END {
+      if (server && !client) print "server"
+      else if (client && !server) print "client"
+      else print "unknown"
+    }
+  ' "$file"
 }
 
 config_role() {
@@ -2746,10 +3528,16 @@ check_config_compatibility_file() {
 
 show_compatibility() {
   local source_repo="${1:-}" file="${2:-$CONFIG_FILE}"
-  if [[ -z "$source_repo" ]]; then source_repo=$(read_saved_backhaul_source 2>/dev/null || printf '%s' "$MUSIXAL_BACKHAUL_REPO"); fi
+  if [[ -z "$source_repo" ]]; then source_repo=$(current_backhaul_source); fi
   printf '\n%bCompatibility check%b\n' "$C_BOLD" "$C_RESET"
   printf '  Target     : %s\n' "$source_repo"
   printf '  Config     : %s\n' "$file"
+  if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+    err "Installed Backhaul source is unknown, so current-source compatibility cannot be claimed."
+    info "Record it first with Backhaul maintenance -> Record current source, or --set-source REPO."
+    return 1
+  fi
+  validate_backhaul_source "$source_repo" || { err "Invalid compatibility target: ${source_repo}"; return 1; }
   if check_config_compatibility_file "$source_repo" "$file"; then
     ok "Configuration is compatible with ${source_repo}."
     return 0
@@ -2766,17 +3554,17 @@ sanitize_config_for_source() {
   role=$(config_role_from_file "$input")
   [[ "$role" == "server" || "$role" == "client" ]] || return 1
   tmp="${output}.tmp.$$"
-  cp -a -- "$input" "$tmp"
+  cp -a -- "$input" "$tmp" || return 1
   if check_config_compatibility_file "$source_repo" "$input"; then
-    mv -f -- "$tmp" "$output"
-    return 0
+    mv -f -- "$tmp" "$output" || { rm -f -- "$tmp"; return 1; }
+    return
   fi
   for key in "${COMPAT_UNSUPPORTED_KEYS[@]}"; do
     case "$key" in
       web_bind_addr|web_username|web_password)
         if [[ "$source_repo" == "$MUSIXAL_BACKHAUL_REPO" ]]; then
           had_power_web=1
-          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+          if ! sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"; then rm -f -- "$tmp"; return 1; fi
         else
           rm -f -- "$tmp"
           return 1
@@ -2784,11 +3572,11 @@ sanitize_config_for_source() {
         ;;
       max_pool_size|tls_verify|udp_queue_size|udp_queue_limit|udp_max_flows)
         if [[ "$role" == "server" && ( "$key" == "max_pool_size" || "$key" == "tls_verify" ) ]]; then
-          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+          if ! sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"; then rm -f -- "$tmp"; return 1; fi
         elif [[ "$role" == "client" && "$key" == udp_* ]]; then
-          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+          if ! sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"; then rm -f -- "$tmp"; return 1; fi
         elif [[ "$source_repo" == "$MUSIXAL_BACKHAUL_REPO" ]]; then
-          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+          if ! sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"; then rm -f -- "$tmp"; return 1; fi
         else
           rm -f -- "$tmp"
           return 1
@@ -2796,7 +3584,7 @@ sanitize_config_for_source() {
         ;;
       heartbeat|bind_addr|channel_size|ports|tls_cert|tls_key|mux_con|accept_udp|proxy_protocol)
         if [[ "$role" == "client" ]]; then
-          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+          if ! sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"; then rm -f -- "$tmp"; return 1; fi
         else
           rm -f -- "$tmp"
           return 1
@@ -2804,7 +3592,7 @@ sanitize_config_for_source() {
         ;;
       remote_addr|connection_pool|retry_interval|dial_timeout|aggressive_pool|edge_ip)
         if [[ "$role" == "server" ]]; then
-          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+          if ! sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"; then rm -f -- "$tmp"; return 1; fi
         else
           rm -f -- "$tmp"
           return 1
@@ -2814,31 +3602,34 @@ sanitize_config_for_source() {
     esac
   done
   if (( had_power_web )) && [[ "$source_repo" == "$MUSIXAL_BACKHAUL_REPO" ]]; then
-    sed -i -E 's/^[[:space:]]*web_port[[:space:]]*=.*/web_port = 0/' "$tmp"
+    if ! sed -i -E 's/^[[:space:]]*web_port[[:space:]]*=.*/web_port = 0/' "$tmp"; then rm -f -- "$tmp"; return 1; fi
   fi
   if ! check_config_compatibility_file "$source_repo" "$tmp"; then
     rm -f -- "$tmp"
     return 1
   fi
-  chmod 0600 "$tmp"
-  mv -f -- "$tmp" "$output"
+  if ! chmod 0600 "$tmp" || ! mv -f -- "$tmp" "$output"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
 }
 
 show_status() {
-  local version="not installed" active="inactive" enabled="disabled" role transport address source_repo="not selected" profile_count=0 legacy_count=0 profile
+  local version="not installed" active="inactive" enabled="disabled" tunnel="down" role transport address source_repo="not selected" profile_count=0 legacy_count=0 profile
   [[ -x "$BACKHAUL_BIN" ]] && version=$("$BACKHAUL_BIN" -v 2>/dev/null || printf 'unknown')
-  if ! source_repo=$(read_saved_backhaul_source 2>/dev/null); then
-    if [[ -x "$BACKHAUL_BIN" ]]; then
-      source_repo="${MUSIXAL_BACKHAUL_REPO} (legacy)"
-    else
-      source_repo="not selected"
-    fi
+  if [[ -x "$BACKHAUL_BIN" ]]; then
+    source_repo=$(current_backhaul_source)
+    [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]] && source_repo="unknown (record source before maintenance)"
+  else
+    source_repo="not selected"
   fi
   if service_is_active; then
     if profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
       active="active"
+      if service_health_probe "$SERVICE_NAME" "$CONFIG_FILE"; then tunnel="healthy"; else tunnel="degraded/disconnected"; fi
     else
       active="active (config mismatch)"
+      tunnel="unknown (config mismatch)"
     fi
   fi
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && enabled="enabled"
@@ -2858,6 +3649,7 @@ show_status() {
   printf '  Transport  : %s\n' "${transport:-unknown}"
   printf '  Endpoint   : %s\n' "${address:-unknown}"
   printf '  Service    : %s, %s\n' "$active" "$enabled"
+  printf '  Tunnel     : %s\n' "$tunnel"
   printf '  Config     : %s\n' "$CONFIG_FILE"
   [[ -n "$LOG_FILE" ]] && printf '  Run log    : %s\n' "$LOG_FILE"
 }
@@ -2877,7 +3669,7 @@ diagnose() {
   fi
   if [[ -f "$SERVICE_FILE" ]]; then
     ok "systemd unit exists."
-    if unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+    if profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
       ok "Service points at the selected profile config."
     else
       err "Service/config mismatch: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
@@ -2887,11 +3679,25 @@ diagnose() {
     err "systemd unit is missing."
     ((failures += 1))
   fi
-  if service_is_active; then ok "Service is active."; else err "Service is not active."; ((failures += 1)); fi
+  if service_is_active; then
+    ok "Service is active."
+    if service_health_probe "$SERVICE_NAME" "$CONFIG_FILE"; then
+      ok "Tunnel health is verified for the running service PID."
+    else
+      err "Service is active, but the tunnel health check failed for its current PID."
+      ((failures += 1))
+    fi
+  else
+    err "Service is not active."
+    ((failures += 1))
+  fi
   if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then ok "Service is enabled at boot."; else warn "Service is not enabled at boot."; ((warnings += 1)); fi
 
   source_repo=$(current_backhaul_source)
-  if check_config_compatibility_file "$source_repo" "$CONFIG_FILE"; then
+  if [[ "$source_repo" == "$UNKNOWN_BACKHAUL_SOURCE" ]]; then
+    warn "Backhaul source metadata is unknown; source compatibility was not guessed."
+    ((warnings += 1))
+  elif check_config_compatibility_file "$source_repo" "$CONFIG_FILE"; then
     ok "Config is compatible with ${source_repo}."
   else
     err "Config contains unsupported settings for ${source_repo}: ${COMPAT_UNSUPPORTED_KEYS[*]}"
@@ -2932,7 +3738,7 @@ show_metrics() {
   local pid memory tasks restarts cpu_mem web_port username password stats auth_file="" auth_value service_state
   printf '\n%b===== Health & metrics: %s =====%b\n' "$C_BOLD" "$ACTIVE_PROFILE" "$C_RESET"
   if ! profile_exists "$ACTIVE_PROFILE"; then err "Selected profile is not configured."; return 1; fi
-  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+  if ! profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
     err "Refusing mismatched metrics: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
     return 1
   fi
@@ -2985,26 +3791,34 @@ service_action() {
     err "Backhaul is not installed as a managed service."
     return 1
   fi
-  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+  if ! profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
     err "Refusing service action: ${SERVICE_NAME} does not point at the selected config ${CONFIG_FILE}."
     info "Open Profiles to inspect detected legacy tunnels or adopt the correct config first."
     return 1
   fi
   case "$action" in
     start)
-      systemctl start "$SERVICE_NAME"
-      systemctl enable "$SERVICE_NAME" >/dev/null
+      if ! systemctl daemon-reload; then err "systemd daemon-reload failed."; return 1; fi
+      if ! systemctl enable "$SERVICE_NAME" >/dev/null; then err "Could not enable ${SERVICE_NAME}."; return 1; fi
+      if ! systemctl start "$SERVICE_NAME"; then err "Could not start ${SERVICE_NAME}."; return 1; fi
       ;;
-    stop) systemctl stop "$SERVICE_NAME" ;;
-    restart) systemctl restart "$SERVICE_NAME" ;;
+    stop)
+      stop_service_verified "$SERVICE_NAME" || return 1
+      ;;
+    restart)
+      if ! systemctl restart "$SERVICE_NAME"; then err "Could not restart ${SERVICE_NAME}."; return 1; fi
+      ;;
     *) return 2 ;;
   esac
   if [[ "$action" == "stop" ]]; then
-    service_is_active && { err "Service is still active."; return 1; }
     ok "Backhaul stopped."
   else
-    sleep 1
-    if service_is_active; then ok "Backhaul ${action} succeeded."; else err "Backhaul did not become active."; return 1; fi
+    if verify_service_health "$SERVICE_NAME" "$CONFIG_FILE" 20; then
+      ok "Backhaul ${action} succeeded and tunnel health is verified."
+    else
+      err "Backhaul ${action} did not reach a healthy tunnel state."
+      return 1
+    fi
   fi
 }
 
@@ -3100,42 +3914,80 @@ print_incompatible_profiles() {
   for item in "${INCOMPATIBLE_PROFILES[@]}"; do printf '  - %s\n' "$item"; done
 }
 
-sanitize_all_profiles_for_source() {
-  local source_repo="$1" profile file migrated idx
-  local -a original_files=() staged_files=()
+stage_all_profiles_for_source() {
+  local source_repo="$1" stage_dir="$2" profile file staged
+  install -d -m 0700 "$stage_dir" || return 1
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" || continue
     file=$(profile_config_path "$profile")
-    migrated="${file}.migrated.$$"
-    if ! sanitize_config_for_source "$source_repo" "$file" "$migrated"; then
-      rm -f -- "$migrated"
-      for migrated in "${staged_files[@]}"; do rm -f -- "$migrated"; done
+    install -d -m 0700 "$stage_dir/$profile" || return 1
+    staged="$stage_dir/$profile/config.toml"
+    if ! sanitize_config_for_source "$source_repo" "$file" "$staged"; then
       err "Could not safely adapt profile '${profile}' for ${source_repo}."
-      return 1
-    fi
-    original_files+=("$file")
-    staged_files+=("$migrated")
-  done
-  for idx in "${!original_files[@]}"; do
-    if ! mv -f -- "${staged_files[$idx]}" "${original_files[$idx]}"; then
-      for migrated in "${staged_files[@]:$((idx + 1))}"; do rm -f -- "$migrated"; done
-      err "Could not commit the staged profile adaptations."
       return 1
     fi
   done
 }
 
+commit_staged_profiles() {
+  local stage_dir="$1" profile_dir profile target tmp
+  for profile_dir in "$stage_dir"/*; do
+    [[ -d "$profile_dir" && -f "$profile_dir/config.toml" ]] || continue
+    profile="${profile_dir##*/}"
+    validate_profile_name "$profile" || return 1
+    target=$(profile_config_path "$profile") || return 1
+    tmp="${target}.migration.$$"
+    if ! install -m 0600 "$profile_dir/config.toml" "$tmp" || ! mv -f -- "$tmp" "$target"; then
+      rm -f -- "$tmp"
+      err "Could not atomically commit profile '${profile}'."
+      return 1
+    fi
+  done
+}
+
+commit_staged_binary() {
+  local candidate="$1" tmp="${BACKHAUL_BIN}.new"
+  [[ -f "$candidate" && -x "$candidate" ]] || { err "Staged Backhaul binary is missing or not executable."; return 1; }
+  install -m 0755 "$candidate" "$tmp" || return 1
+  mv -f -- "$tmp" "$BACKHAUL_BIN"
+}
+
+start_managed_services_from_state() {
+  local state_file="$1" svc active enabled profile config_file started=0
+  while read -r svc active enabled; do
+    [[ -n "$svc" && "$active" == "yes" ]] || continue
+    if [[ "$svc" == "backhaul.service" ]]; then
+      profile="default"
+    elif [[ "$svc" =~ ^backhaul-([A-Za-z0-9][A-Za-z0-9_-]{0,31})\.service$ ]]; then
+      profile="${BASH_REMATCH[1]}"
+    else
+      err "Unexpected managed service in saved state: ${svc}"
+      return 1
+    fi
+    config_file=$(profile_config_path "$profile") || return 1
+    systemctl start "$svc" || return 1
+    verify_service_health "$svc" "$config_file" || return 1
+    started=$((started + 1))
+  done < "$state_file"
+  STARTED_SERVICE_COUNT="$started"
+}
+
 migrate_backhaul_source() {
   local target_source="$1" requested="${2:-latest}" allow_downgrade="${3:-no}" allow_sanitize="${4:-no}"
-  local current_source current_version target_version safety original_profile profile svc active enabled
+  local current_source current_version target_version safety original_profile profile
+  local stage_dir candidate started
   validate_backhaul_source "$target_source" || { err "Invalid migration target: ${target_source}"; return 1; }
   managed_installation_exists || { err "No managed installation found."; return 1; }
   [[ -x "$BACKHAUL_BIN" ]] || { err "Backhaul binary is missing."; return 1; }
   guard_active_legacy_tunnels "migrate the shared Backhaul source" || return 1
+  guard_shared_binary_consumers "migrate the shared Backhaul source" || return 1
   current_source=$(current_backhaul_source)
   [[ "$current_source" != "$target_source" ]] || { warn "Backhaul already uses ${target_source}."; return 2; }
-  current_version=$("$BACKHAUL_BIN" -v 2>/dev/null || true)
+  if ! current_version=$(installed_backhaul_version); then
+    err "The installed Backhaul binary did not report a valid version; refusing source migration."
+    return 1
+  fi
   target_version=$(resolve_release_version "$target_source" "$requested") || return 1
   if [[ -n "$current_version" ]] && version_is_older "$target_version" "$current_version" && [[ "$allow_downgrade" != "yes" ]]; then
     warn "Migration would downgrade Backhaul: ${current_version} -> ${target_version}."
@@ -3150,14 +4002,34 @@ migrate_backhaul_source() {
   create_backup "source-migration" || return 1
   safety="$LAST_BACKUP_DIR"
   original_profile="$ACTIVE_PROFILE"
+  stage_dir="${STATE_DIR}/.source-migration-stage.$$"
+  candidate="${STATE_DIR}/.backhaul-candidate.$$"
+  install -d -m 0700 "$stage_dir" || return 1
   if [[ "$allow_sanitize" == "yes" ]]; then
-    if ! sanitize_all_profiles_for_source "$target_source"; then
-      apply_backup_tree "$safety" || true
+    if ! stage_all_profiles_for_source "$target_source" "$stage_dir/profiles"; then
+      rm -rf -- "$stage_dir"
       return 1
     fi
   fi
-  if ! download_backhaul "$target_version" "$target_source"; then
-    apply_backup_tree "$safety" || true
+  if ! download_backhaul "$target_version" "$target_source" "$candidate"; then
+    rm -rf -- "$stage_dir"
+    return 1
+  fi
+
+  begin_transaction apply_backup_tree "$safety" || { rm -rf -- "$stage_dir"; rm -f -- "$candidate"; return 1; }
+  if ! stop_all_managed_services; then
+    rollback_active_transaction "source migration stop failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
+    return 1
+  fi
+  if [[ "$allow_sanitize" == "yes" ]] && ! commit_staged_profiles "$stage_dir/profiles"; then
+    rollback_active_transaction "source migration config commit failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
+    return 1
+  fi
+  if ! commit_staged_binary "$candidate"; then
+    rollback_active_transaction "source migration binary commit failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
     return 1
   fi
   refresh_profile_names
@@ -3165,26 +4037,37 @@ migrate_backhaul_source() {
     profile_exists "$profile" || continue
     apply_profile_context "$profile"
     if ! write_service_file "$target_source"; then
-      apply_backup_tree "$safety" || true
+      rollback_active_transaction "source migration unit update failure" || true
+      rm -rf -- "$stage_dir"; rm -f -- "$candidate"
       return 1
     fi
   done
   if ! systemctl daemon-reload; then
-    apply_backup_tree "$safety" || true
+    rollback_active_transaction "source migration daemon-reload failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
     return 1
   fi
-  while read -r svc active enabled; do
-    [[ "$active" == "yes" ]] || continue
-    if ! systemctl restart "$svc" || ! sleep 1 || ! systemctl is-active --quiet "$svc"; then
-      err "${svc} failed after source migration; restoring the previous installation."
-      apply_backup_tree "$safety" || err "Automatic migration rollback failed: ${safety}"
-      return 1
-    fi
-  done < "$safety/services.state"
-  save_backhaul_source "$target_source" || { apply_backup_tree "$safety" || true; return 1; }
+  if ! start_managed_services_from_state "$safety/services.state"; then
+    err "A managed tunnel failed health verification after source migration."
+    rollback_active_transaction "source migration health failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
+    return 1
+  fi
+  started="$STARTED_SERVICE_COUNT"
+  if ! save_backhaul_source "$target_source"; then
+    rollback_active_transaction "source metadata persistence failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
+    return 1
+  fi
   if profile_exists "$original_profile" || [[ "$original_profile" == "default" ]]; then apply_profile_context "$original_profile"; fi
-  save_active_profile "$ACTIVE_PROFILE"
-  ok "Migration complete: ${current_source} ${current_version} -> ${target_source} ${target_version}."
+  if ! save_active_profile "$ACTIVE_PROFILE"; then
+    rollback_active_transaction "active-profile state failure" || true
+    rm -rf -- "$stage_dir"; rm -f -- "$candidate"
+    return 1
+  fi
+  commit_transaction
+  rm -rf -- "$stage_dir"; rm -f -- "$candidate"
+  ok "Migration complete: ${current_source} ${current_version} -> ${target_source} ${target_version}; ${started} active tunnel(s) verified."
 }
 
 migrate_source_interactive() {
@@ -3205,7 +4088,11 @@ migrate_source_interactive() {
         downgrade="yes"
         ;;
       4)
-        warn "Safe adaptation removes target-unsupported fork-only keys; web metrics are disabled when moving to Musixal."
+        if [[ "$target_source" == "$MUSIXAL_BACKHAUL_REPO" ]]; then
+          warn "Safe adaptation removes PowerMatin-only keys and disables the Musixal web monitor where secure loopback/auth settings are unavailable."
+        else
+          warn "Safe adaptation removes only known role-mismatched legacy keys that the target does not use."
+        fi
         ask_yn "Create a backup and adapt incompatible profiles automatically?" "n" || { info "Migration cancelled."; return 0; }
         sanitize="yes"
         ;;
@@ -3215,15 +4102,26 @@ migrate_source_interactive() {
 }
 
 upgrade_backhaul() {
-  local version="${1:-latest}" source_repo="${2:-}" safety svc active enabled restarted=0
+  local version="${1:-latest}" source_repo="${2:-}" allow_downgrade="${3:-no}"
+  local safety current_version target_version candidate restarted=0
   validate_version "$version" || { err "Invalid Backhaul version: ${version}"; return 1; }
   version=$(normalize_version "$version")
   managed_installation_exists || { err "No managed installation found. Configure Backhaul first."; return 1; }
   guard_active_legacy_tunnels "upgrade the shared Backhaul binary" || return 1
+  guard_shared_binary_consumers "upgrade the shared Backhaul binary" || return 1
   if [[ -z "$source_repo" ]]; then
-    source_repo=$(current_backhaul_source)
+    source_repo=$(require_known_backhaul_source) || return 1
   fi
   validate_backhaul_source "$source_repo" || { err "Invalid Backhaul source: ${source_repo}"; return 1; }
+  if ! current_version=$(installed_backhaul_version); then
+    err "The installed Backhaul binary is missing or did not report a valid version."
+    return 1
+  fi
+  target_version=$(resolve_release_version "$source_repo" "$version") || return 1
+  if [[ -n "$current_version" ]] && version_is_older "$target_version" "$current_version" && [[ "$allow_downgrade" != "yes" ]]; then
+    warn "Upgrade request would downgrade Backhaul: ${current_version} -> ${target_version}."
+    return 3
+  fi
   check_all_profiles_compatibility "$source_repo" || {
     err "One or more profiles are incompatible with the selected source; run Compatibility check first."
     print_incompatible_profiles
@@ -3231,23 +4129,59 @@ upgrade_backhaul() {
   }
   create_backup "upgrade" || return 1
   safety="$LAST_BACKUP_DIR"
-  if ! download_backhaul "$version" "$source_repo"; then return 1; fi
+  candidate="${STATE_DIR}/.backhaul-upgrade-candidate.$$"
+  if ! download_backhaul "$target_version" "$source_repo" "$candidate"; then return 1; fi
   if (( BINARY_CHANGED == 0 )); then
-    save_backhaul_source "$source_repo"
+    rm -f -- "$candidate"
+    save_backhaul_source "$source_repo" || return 1
     return 0
   fi
-  while read -r svc active enabled; do
-    [[ "$active" == "yes" ]] || continue
-    if ! systemctl restart "$svc" || ! sleep 1 || ! systemctl is-active --quiet "$svc"; then
-      err "${svc} failed after upgrade; restoring the complete pre-upgrade state."
-      apply_backup_tree "$safety" || err "Automatic rollback failed; recovery backup: ${safety}"
-      return 1
-    fi
-    ((restarted += 1))
-  done < "$safety/services.state"
-  save_backhaul_source "$source_repo"
+  begin_transaction apply_backup_tree "$safety" || { rm -f -- "$candidate"; return 1; }
+  if ! stop_all_managed_services; then
+    rollback_active_transaction "upgrade stop failure" || true
+    rm -f -- "$candidate"
+    return 1
+  fi
+  if ! commit_staged_binary "$candidate"; then
+    rollback_active_transaction "upgrade binary commit failure" || true
+    rm -f -- "$candidate"
+    return 1
+  fi
+  if ! start_managed_services_from_state "$safety/services.state"; then
+    rollback_active_transaction "upgrade health failure" || true
+    rm -f -- "$candidate"
+    return 1
+  fi
+  restarted="$STARTED_SERVICE_COUNT"
+  if ! save_backhaul_source "$source_repo"; then
+    rollback_active_transaction "upgrade source-state failure" || true
+    rm -f -- "$candidate"
+    return 1
+  fi
+  commit_transaction
+  rm -f -- "$candidate"
   if (( restarted > 0 )); then ok "Upgrade complete: ${DOWNLOADED_VERSION}; ${restarted} active profile(s) verified.";
   else ok "Upgraded to ${DOWNLOADED_VERSION}; all profiles remain stopped."; fi
+}
+
+upgrade_backhaul_interactive() {
+  local version rc downgrade="no"
+  version=$(ask_version)
+  while true; do
+    if upgrade_backhaul "$version" "" "$downgrade"; then
+      return 0
+    else
+      rc=$?
+    fi
+    if [[ "$rc" -ne 3 ]]; then
+      return "$rc"
+    fi
+    if ! ask_yn "This is a downgrade. Continue only if you explicitly need the older release?" "n"; then
+      info "Upgrade/downgrade cancelled before changing the running binary."
+      return 0
+    fi
+    downgrade="yes"
+  done
 }
 
 show_logs() {
@@ -3256,7 +4190,7 @@ show_logs() {
     err "Log line count must be between 1 and 5000."
     return 1
   fi
-  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+  if ! profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
     err "Refusing mismatched logs: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
     return 1
   fi
@@ -3264,7 +4198,7 @@ show_logs() {
 }
 
 follow_logs() {
-  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+  if ! profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
     err "Refusing mismatched logs: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
     return 1
   fi
@@ -3272,52 +4206,98 @@ follow_logs() {
   journalctl -u "$SERVICE_NAME" -f
 }
 
+rollback_uninstall_transaction() {
+  local reason="$1" rollback_dir="${2:-}"
+  if rollback_active_transaction "$reason"; then
+    [[ -z "$rollback_dir" ]] || rm -rf -- "$rollback_dir" || warn "Could not remove temporary rollback data: ${rollback_dir}"
+    return 0
+  fi
+  if [[ -n "$rollback_dir" && -d "$rollback_dir" ]]; then
+    err "Emergency rollback snapshot preserved at: ${rollback_dir}"
+  fi
+  return 1
+}
+
 uninstall_backhaul() {
-  local profile svc
+  local profile svc safety rollback_dir="" purge="no"
   printf '\n%b===== Uninstall Backhaul =====%b\n' "$C_BOLD" "$C_RESET"
   guard_active_legacy_tunnels "uninstall the shared Backhaul binary" || return 1
+  guard_shared_binary_consumers "uninstall the shared Backhaul binary" || return 1
   warn "This removes all managed Backhaul services and the shared binary."
   if ! ask_yn "Continue?" "n"; then info "Cancelled."; return 0; fi
+  if ask_yn "Also permanently delete config, credentials, and backups?" "n"; then purge="yes"; fi
+  create_backup "pre-uninstall" || return 1
+  safety="$LAST_BACKUP_DIR"
+  if [[ "$purge" == "yes" ]]; then
+    rollback_dir=$(mktemp -d /tmp/backhaul-uninstall-rollback.XXXXXX)
+    chmod 0700 "$rollback_dir"
+    if ! cp -a -- "$safety/." "$rollback_dir/"; then
+      rm -rf -- "$rollback_dir"
+      err "Could not prepare an out-of-tree uninstall rollback snapshot."
+      return 1
+    fi
+    begin_transaction apply_backup_tree "$rollback_dir" || { rm -rf -- "$rollback_dir"; return 1; }
+  else
+    begin_transaction apply_backup_tree "$safety" || return 1
+  fi
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     svc=$(profile_service_name "$profile")
-    if profile_exists "$profile" && unit_file_uses_config_file "/etc/systemd/system/${svc}" "$(profile_config_path "$profile")"; then
-      systemctl stop "$svc" 2>/dev/null || true
-      systemctl disable "$svc" >/dev/null 2>&1 || true
-      rm -f -- "/etc/systemd/system/${svc}"
+    if profile_exists "$profile" && service_uses_config_file "$svc" "/etc/systemd/system/${svc}" "$(profile_config_path "$profile")"; then
+      if ! stop_service_verified "$svc" || ! disable_service_verified "$svc"; then
+        rollback_uninstall_transaction "uninstall service stop failure" "$rollback_dir" || true
+        return 1
+      fi
     elif [[ -e "/etc/systemd/system/${svc}" ]]; then
       warn "Preserving ${svc}: its ExecStart does not use the managed '${profile}' config."
     fi
   done
-  systemctl daemon-reload
-  rm -rf -- "$BACKHAUL_DIR"
-  if ask_yn "Also permanently delete config, credentials, and backups?" "n"; then
-    rm -rf -- "$BASE_CONFIG_DIR" "$STATE_DIR"
+  for profile in "${PROFILE_NAMES[@]}"; do
+    svc=$(profile_service_name "$profile")
+    if profile_exists "$profile" && service_uses_config_file "$svc" "/etc/systemd/system/${svc}" "$(profile_config_path "$profile")"; then
+      rm -f -- "/etc/systemd/system/${svc}" || { rollback_uninstall_transaction "uninstall unit removal failure" "$rollback_dir" || true; return 1; }
+    fi
+  done
+  if ! systemctl daemon-reload || ! rm -rf -- "$BACKHAUL_DIR"; then
+    rollback_uninstall_transaction "uninstall filesystem failure" "$rollback_dir" || true
+    return 1
+  fi
+  if [[ "$purge" == "yes" ]]; then
+    if ! rm -rf -- "$BASE_CONFIG_DIR" "$STATE_DIR"; then
+      rollback_uninstall_transaction "uninstall purge failure" "$rollback_dir" || true
+      return 1
+    fi
     apply_profile_context "default"
+    commit_transaction
+    rm -rf -- "$rollback_dir"
     ok "Backhaul, config, credentials, and backups were removed."
     info "Run logs are preserved in ${LOG_DIR}."
   else
+    commit_transaction
     ok "Backhaul was removed; config and backups were preserved."
     info "Preserved: ${BASE_CONFIG_DIR} and ${BACKUP_DIR}"
+    info "Recovery snapshot: ${safety}"
   fi
 }
 
 backhaul_maintenance_menu() {
-  local choice version source_repo
+  local choice source_repo
   printf '\n%bBackhaul maintenance%b\n' "$C_BOLD" "$C_RESET"
   printf '  1) Upgrade current source\n'
   printf '  2) Migrate source\n'
   printf '  3) Check current compatibility\n'
   printf '  4) Check power0matin compatibility\n'
   printf '  5) Check Musixal compatibility\n'
+  printf '  6) Record current source\n'
   printf '  0) Back\n'
   choice=$(tty_read "Choose: ")
   case "$choice" in
-    1) version=$(ask_version); upgrade_backhaul "$version" ;;
+    1) upgrade_backhaul_interactive ;;
     2) migrate_source_interactive ;;
     3) source_repo=$(current_backhaul_source); show_compatibility "$source_repo" ;;
     4) show_compatibility "$POWERMATIN_BACKHAUL_REPO" ;;
     5) show_compatibility "$MUSIXAL_BACKHAUL_REPO" ;;
+    6) claim_backhaul_source_interactive ;;
     0|"") return 0 ;;
     *) warn "Invalid choice."; return 1 ;;
   esac
@@ -3414,6 +4394,9 @@ prepare_runtime() {
   require_root
   check_platform
   check_dependencies
+  if operation_requires_lock "${1:-}"; then
+    acquire_operation_lock || return 1
+  fi
   load_active_profile
   setup_logging
 }
@@ -3424,7 +4407,7 @@ main() {
     -V|--version) printf 'Backhaul Manager %s\n' "$MANAGER_VERSION"; return 0 ;;
   esac
 
-  prepare_runtime
+  prepare_runtime "$@" || return 1
   if [[ "${1:-}" == "--profile" ]]; then
     [[ -n "${2:-}" ]] || { err "--profile requires a profile name."; return 2; }
     profile_exists "$2" || { err "Profile '$2' is not configured."; return 1; }
@@ -3443,6 +4426,10 @@ main() {
     --migrate-source)
       [[ -n "${2:-}" ]] || { err "--migrate-source requires power0matin/Backhaul or Musixal/Backhaul."; return 2; }
       migrate_backhaul_source "$2" "${3:-latest}" "no" "no"
+      ;;
+    --set-source)
+      [[ -n "${2:-}" ]] || { err "--set-source requires power0matin/Backhaul or Musixal/Backhaul."; return 2; }
+      claim_backhaul_source "$2"
       ;;
     --compat) show_compatibility "${2:-$(current_backhaul_source)}" ;;
     --list-profiles) list_profiles ;;

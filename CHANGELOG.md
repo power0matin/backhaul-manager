@@ -9,6 +9,11 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Added
 
+- Manager v3.1.0 operation lock (`flock`) so concurrent interactive/CLI writers cannot mutate the shared Backhaul state at the same time.
+- Explicit current-source recording (`--set-source` and **Backhaul maintenance → Record current source**) for installations whose existing binary provenance is not recorded.
+- PID-aware tunnel health verification: server health requires the configured listener to belong to the current service PID, while client health tracks the live peer/control-channel state instead of accepting `systemctl active` alone.
+- Schema-2 backups that include detected root-level legacy configs, their restorable service state, and TLS material in addition to managed profiles.
+- Failure-injection regressions for systemd enable/stop failures, effective `ExecStart` overrides, transaction rollback, stale client control channels, TOML comments/literal strings, and managed+legacy backup validation.
 - Automatic discovery of valid root-level legacy Backhaul TOML configs (for example `config-2087.toml`) plus explicit, rollback-aware adoption into native named profiles.
 - Manager v3 operations suite with Standard/Advanced configuration modes and resource-aware `safe`, `balanced`, and `throughput` tuning profiles.
 - First-class advanced Backhaul port rules including ranges, local remaps, remote host/IPv4 mappings, and bracketed IPv6 targets with control-port conflict checks.
@@ -32,17 +37,21 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Changed
 
-- Bumped the Manager runtime version to `3.0.2` with hardened legacy-client migration and rollback validation.
+- Bumped the Manager runtime version to `3.1.0` with lifecycle, transaction, source-provenance, and legacy-backup hardening.
+- Missing source metadata is now reported as `unknown` instead of being guessed as `Musixal/Backhaul`; source-dependent upgrades require an explicitly recorded source.
+- Upgrade/source migration now stage the candidate binary/config set before cutover, stop each previously-active managed service once, and require tunnel-level health before committing source/version state.
+- Shared-binary maintenance now blocks on any detected legacy tunnel, including stopped ones, until it is adopted into profile management.
+- Effective systemd `ExecStart` (including drop-in overrides) now takes precedence over stale static unit contents when determining service/config ownership.
+- Removed the old heuristic tunnel-service stop/disable prompt from configure paths; Manager now mutates only services it can map to a managed/explicitly adopted Backhaul config.
 - Backhaul upgrades now snapshot the complete managed installation and restart/verify every profile that was active before the shared binary changed.
 - Named-profile TLS clones now copy cert/key material into the cloned profile instead of depending on the source profile's paths.
-- Portable restore regenerates systemd units from the Manager's trusted template and relocates included TLS files into root-only managed profile directories.
+- Portable restore validates saved unit command/config ownership and rejects executable/environment hooks that are unsafe to restore as root; included TLS files are relocated into root-only managed directories.
 - Portable archive validation now caps compressed, per-member, and total expanded sizes in addition to validating member paths/types/count.
 - Remote migration forces the transferred secret bundle to mode `0600` before offering remote restore.
 - Version downgrade checks now use SemVer precedence, including prerelease identifiers and build metadata, instead of GNU version sort behavior.
 - Reworked the interactive menu into a full operations manager instead of an install/uninstall-only workflow.
 - Backhaul downloads now happen in a private temporary directory, extract only the expected binary, validate `backhaul -v`, verify pinned versions, and replace the live binary atomically.
 - Config files are written through temporary files and atomically moved into place.
-- Old-service cleanup now only accepts numbered services from the detected tunnel-related candidate list and asks for confirmation before disabling them.
 - systemd now waits for `network-online.target`, uses `Restart=on-failure`, and applies `UMask=0077`.
 - Backhaul's web interface is disabled by default with `web_port = 0` instead of exposing ports 2060/2061 automatically.
 - Uninstall preserves config/backups by default and requires a second confirmation for a permanent purge.
@@ -51,6 +60,14 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Stop/disable/daemon-reload failures can no longer be masked by Bash conditional `errexit` semantics during configure, service actions, profile deletion, uninstall, backup restore, upgrade, or source migration.
+- Interrupting an active transactional operation with `SIGINT`/`SIGTERM` now invokes its rollback handler; legacy adoption commits before archiving the old config so rollback can never reference a path already moved away.
+- Full restore now checks every filesystem/systemd mutation explicitly instead of continuing after a failed write/remove while called from a conditional context.
+- Legacy/profile discovery and service actions now honor effective systemd `ExecStart` and require the executable itself to be `/opt/backhaul/backhaul`, preventing config-path-only false ownership matches.
+- TOML scalar/role parsing now handles inline comments and single-quoted literal strings without truncating `#` characters inside quoted data.
+- Expected compatibility failures no longer emit a misleading global "unexpected error" banner.
+- Profile create/clone/delete refuses systemd-unit ownership collisions instead of overwriting or deleting an unrelated existing unit.
+- Source upgrade now rejects a resolved release older than the installed Backhaul version unless an explicit interactive downgrade is approved.
 - Allow explicitly approved source migration to safely remove known server-only keys such as legacy `heartbeat` from client configs instead of aborting adaptation.
 - Validate backup integrity independently from source-schema compatibility so a byte-for-byte rollback snapshot remains restorable even when a running legacy config contains decoder-ignored keys.
 - Validate every newly created backup before reporting success, and remove an incomplete snapshot if its structure or checksums fail verification.
@@ -78,8 +95,10 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Security
 
+- Portable restore rejects saved service units with additional executable hooks or environment injection, and imported archives are copied into a private staging file before validation/extraction to close validation/extraction races.
+- Remote SSH migration now allocates the destination bundle with remote `mktemp` rather than using a predictable filename.
 - Portable imports reject absolute/traversal paths, symlinks, hardlinks/devices, excessive members, oversized members, oversized compressed archives, and excessive expanded data before root extraction.
-- Imported backup trees are checksum-verified, staged with root-only permissions, and only trusted Manager-generated systemd unit templates are installed.
+- Imported backup trees are checksum-verified, staged with root-only permissions, and saved systemd units must pass strict Backhaul executable/config ownership checks before installation.
 - PowerMatin web metrics bind to `127.0.0.1` with validated/generated credentials; Musixal v0.7.2 metrics are not exposed automatically.
 - Manager and Backhaul downloads use HTTPS-only curl policy, timeouts/retries, and download size limits; Manager self-update validates syntax without pre-executing the downloaded script.
 - Remote migration validates SSH targets, keeps options in SSH config instead of user-controlled command arguments, and protects transferred backup permissions.
