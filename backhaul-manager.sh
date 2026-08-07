@@ -497,7 +497,7 @@ unit_file_uses_backhaul_binary() {
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*ExecStart= ]] || continue
     command="${line#*=}"
-    command="${command#${command%%[![:space:]]*}}"
+    command="${command#"${command%%[![:space:]]*}"}"
     case "$command" in
       "${BACKHAUL_BIN}"|"${BACKHAUL_BIN} "*) return 0 ;;
     esac

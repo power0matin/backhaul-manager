@@ -358,6 +358,8 @@ assert_failure "verified stop rejects systemd stop failure" stop_failure_is_fata
 
 transaction_rollback_executes() (
   local rollback_marker="no"
+  # ShellCheck cannot follow the rollback handler name passed to begin_transaction.
+  # shellcheck disable=SC2317
   test_rollback_handler() { rollback_marker="yes"; }
   TRANSACTION_ACTIVE=0
   TRANSACTION_ROLLBACK_RUNNING=0
