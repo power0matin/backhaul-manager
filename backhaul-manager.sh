@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly MANAGER_VERSION="3.0.0"
+readonly MANAGER_VERSION="3.0.1"
 readonly BACKHAUL_DIR="/opt/backhaul"
 readonly BACKHAUL_BIN="${BACKHAUL_DIR}/backhaul"
 readonly BASE_CONFIG_DIR="/root/backhaul"
@@ -38,6 +38,7 @@ SELECTED_BACKUP_DIR=""
 PARSED_PORTS=()
 PORT_RULES=()
 PROFILE_NAMES=()
+LEGACY_CONFIG_FILES=()
 BACKUP_CHOICES=()
 COMPAT_UNSUPPORTED_KEYS=()
 INCOMPATIBLE_PROFILES=()
@@ -110,7 +111,7 @@ Usage:
   sudo ./backhaul-manager.sh --upgrade [ver] Upgrade Backhaul (default: latest)
   sudo ./backhaul-manager.sh --migrate-source REPO [ver]
   sudo ./backhaul-manager.sh --compat [REPO] Check config/source compatibility
-  sudo ./backhaul-manager.sh --list-profiles List managed profiles
+  sudo ./backhaul-manager.sh --list-profiles List managed profiles and detected legacy tunnels
   sudo ./backhaul-manager.sh --select-profile NAME
   sudo ./backhaul-manager.sh --backup        Create a full local backup
   sudo ./backhaul-manager.sh --export PATH   Export a portable .tar.gz backup
@@ -161,7 +162,7 @@ check_platform() {
 check_dependencies() {
   local -a missing=()
   local cmd
-  for cmd in awk cp curl find grep install journalctl mktemp sed sha256sum sort ss stat systemctl tar tee; do
+  for cmd in awk basename cmp cp curl find grep install journalctl mktemp sed sha256sum sort ss stat systemctl tar tee; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if (( ${#missing[@]} > 0 )); then
@@ -257,6 +258,170 @@ refresh_profile_names() {
       PROFILE_NAMES+=("$name")
     done
   fi
+}
+
+matching_managed_profile_for_config() {
+  local legacy_file="$1" dir name default_config="${BASE_CONFIG_DIR}/config.toml"
+  [[ -f "$legacy_file" ]] || return 1
+  if [[ "$legacy_file" != "$default_config" && -f "$default_config" ]] && cmp -s -- "$legacy_file" "$default_config"; then
+    printf 'default'
+    return 0
+  fi
+  [[ -d "$PROFILES_DIR" ]] || return 1
+  for dir in "$PROFILES_DIR"/*; do
+    [[ -f "${dir}/config.toml" ]] || continue
+    if cmp -s -- "$legacy_file" "${dir}/config.toml"; then
+      name="${dir##*/}"
+      validate_profile_name "$name" || continue
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+refresh_legacy_configs_from_root() {
+  local root="$1" file role transport endpoint
+  LEGACY_CONFIG_FILES=()
+  [[ -d "$root" ]] || return 0
+  for file in "$root"/*.toml; do
+    [[ -f "$file" ]] || continue
+    [[ ! -L "$file" ]] || continue
+    [[ "$file" != "$root/config.toml" ]] || continue
+    role=$(config_role_from_file "$file")
+    [[ "$role" == "server" || "$role" == "client" ]] || continue
+    transport=$(config_value_from_file "$file" transport 2>/dev/null || true)
+    validate_transport "$transport" || continue
+    if [[ "$role" == "server" ]]; then
+      endpoint=$(config_value_from_file "$file" bind_addr 2>/dev/null || true)
+    else
+      endpoint=$(config_value_from_file "$file" remote_addr 2>/dev/null || true)
+    fi
+    validate_endpoint "$endpoint" || continue
+    LEGACY_CONFIG_FILES+=("$file")
+  done
+}
+
+refresh_legacy_configs() {
+  refresh_legacy_configs_from_root "$BASE_CONFIG_DIR"
+}
+
+legacy_profile_suggestion() {
+  local file="$1" stem name
+  stem="$(basename "$file" .toml)"
+  name="$stem"
+  [[ "$name" == config-* ]] && name="${name#config-}"
+  name="${name//[^A-Za-z0-9_-]/-}"
+  name="${name:0:32}"
+  if [[ -z "$name" || "$name" == "default" || "$name" == -* ]]; then
+    name="legacy-${name#-}"
+    name="${name:0:32}"
+  fi
+  validate_profile_name "$name" && [[ "$name" != "default" ]] || return 1
+  printf '%s' "$name"
+}
+
+find_services_for_config_file() {
+  local config_file="$1" requested_dir="${2:-}" unit_dir unit_file service
+  local -a unit_dirs=()
+  local -A seen=()
+  [[ -f "$config_file" ]] || return 1
+  if [[ -n "$requested_dir" ]]; then
+    unit_dirs=("$requested_dir")
+  else
+    unit_dirs=(
+      /etc/systemd/system
+      /run/systemd/system
+      /usr/local/lib/systemd/system
+      /usr/lib/systemd/system
+      /lib/systemd/system
+    )
+  fi
+  for unit_dir in "${unit_dirs[@]}"; do
+    [[ -d "$unit_dir" ]] || continue
+    for unit_file in "$unit_dir"/*.service; do
+      [[ -f "$unit_file" ]] || continue
+      service=$(basename "$unit_file")
+      [[ -n "${seen[$service]:-}" ]] && continue
+      seen[$service]=1
+      if unit_file_uses_config_file "$unit_file" "$config_file"; then
+        printf '%s\n' "$service"
+      fi
+    done
+  done
+}
+
+find_service_for_config_file() {
+  local config_file="$1" requested_dir="${2:-}" service
+  while IFS= read -r service; do
+    [[ -n "$service" ]] || continue
+    printf '%s' "$service"
+    return 0
+  done < <(find_services_for_config_file "$config_file" "$requested_dir")
+  return 1
+}
+
+unit_file_uses_config_file() {
+  local unit_file="$1" config_file="$2" line needle suffix
+  local -a needles=()
+  [[ -f "$unit_file" && -n "$config_file" ]] || return 1
+  needles=(
+    " -c ${config_file}"
+    " -c \"${config_file}\""
+    " -c '${config_file}'"
+    " --config ${config_file}"
+    " --config=\"${config_file}\""
+    " --config='${config_file}'"
+    " --config=${config_file}"
+  )
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*ExecStart= ]] || continue
+    for needle in "${needles[@]}"; do
+      [[ "$line" == *"$needle"* ]] || continue
+      suffix="${line#*"$needle"}"
+      if [[ -z "$suffix" || "$suffix" == [[:space:]]* ]]; then
+        return 0
+      fi
+    done
+  done < "$unit_file"
+  return 1
+}
+
+profile_service_uses_config_file() {
+  local profile="$1" config_file="$2" service unit_file
+  service=$(profile_service_name "$profile") || return 1
+  unit_file="/etc/systemd/system/${service}"
+  unit_file_uses_config_file "$unit_file" "$config_file"
+}
+
+guard_selected_service_mapping() {
+  [[ -f "$SERVICE_FILE" ]] || return 0
+  if unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+    return 0
+  fi
+  err "Service/config mismatch: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
+  info "Open Profiles first; a legacy tunnel may currently own this service name."
+  return 1
+}
+
+guard_active_legacy_tunnels() {
+  local operation="$1" file svc found=0
+  refresh_legacy_configs
+  for file in "${LEGACY_CONFIG_FILES[@]}"; do
+    while IFS= read -r svc; do
+      [[ -n "$svc" ]] || continue
+      systemctl is-active --quiet "$svc" 2>/dev/null || continue
+      if (( found == 0 )); then
+        err "Cannot ${operation} while active legacy tunnels are outside profile management:"
+      fi
+      printf '  - %s [%s]\n' "$file" "$svc"
+      found=1
+    done < <(find_services_for_config_file "$file" 2>/dev/null)
+  done
+  (( found == 0 )) || {
+    info "Adopt these tunnels from Profiles first so backup, verification, and rollback can cover them."
+    return 1
+  }
 }
 
 save_active_profile() {
@@ -723,10 +888,8 @@ reset_config_options() {
   ADV_TLS_VERIFY="true"
 }
 
-recommend_tuning_profile() {
-  local cpu_count="${1:-}" mem_mib="${2:-}"
-  if [[ -z "$cpu_count" ]]; then cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1'); fi
-  if [[ -z "$mem_mib" ]]; then mem_mib=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '0'); fi
+recommend_tuning_profile_for_resources() {
+  local cpu_count="$1" mem_mib="$2"
   [[ "$cpu_count" =~ ^[0-9]+$ ]] || cpu_count=1
   [[ "$mem_mib" =~ ^[0-9]+$ ]] || mem_mib=0
   if (( cpu_count <= 1 || (mem_mib > 0 && mem_mib < 768) )); then
@@ -736,6 +899,13 @@ recommend_tuning_profile() {
   else
     printf 'balanced'
   fi
+}
+
+recommend_tuning_profile() {
+  local cpu_count mem_mib
+  cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')
+  mem_mib=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '0')
+  recommend_tuning_profile_for_resources "$cpu_count" "$mem_mib"
 }
 
 apply_tuning_profile() {
@@ -1952,6 +2122,7 @@ configure_server() {
   printf '\n%b===== Configure Iran / server side =====%b\n' "$C_BOLD" "$C_RESET"
   local control_port transport token source_repo version tls_cert="" tls_key=""
   local config_snapshot="" service_snapshot="" binary_snapshot="" source_snapshot="" was_active="no" was_enabled="no" protocol p
+  guard_selected_service_mapping || return 1
   reset_config_options
   if [[ -x "$BACKHAUL_BIN" ]]; then
     source_repo=$(current_backhaul_source)
@@ -2034,6 +2205,7 @@ configure_client() {
   printf '\n%b===== Configure foreign / client side =====%b\n' "$C_BOLD" "$C_RESET"
   local iran_host control_port remote_addr transport token source_repo version edge_ip=""
   local config_snapshot="" service_snapshot="" binary_snapshot="" source_snapshot="" was_active="no" was_enabled="no" protocol
+  guard_selected_service_mapping || return 1
   reset_config_options
   if [[ -x "$BACKHAUL_BIN" ]]; then
     source_repo=$(current_backhaul_source)
@@ -2122,8 +2294,58 @@ ask_profile_name() {
   done
 }
 
+ask_profile_name_default() {
+  local prompt_text="$1" default_name="$2" name
+  while true; do
+    name=$(tty_read "${prompt_text} [${default_name}]: ")
+    name="${name:-$default_name}"
+    if validate_profile_name "$name" && [[ "$name" != "default" ]] && ! profile_exists "$name"; then
+      printf '%s' "$name"
+      return 0
+    fi
+    warn "Choose a new 1-32 character profile name using letters, numbers, '_' or '-'." >&2
+  done
+}
+
+list_legacy_tunnels() {
+  local idx file role transport endpoint svc duplicate state="unmanaged"
+  local -a services=()
+  refresh_legacy_configs
+  (( ${#LEGACY_CONFIG_FILES[@]} > 0 )) || return 0
+  printf '\n%bDetected legacy tunnels (not managed yet)%b\n' "$C_BOLD" "$C_RESET"
+  for idx in "${!LEGACY_CONFIG_FILES[@]}"; do
+    file="${LEGACY_CONFIG_FILES[$idx]}"
+    role=$(config_role_from_file "$file")
+    transport=$(config_value_from_file "$file" transport 2>/dev/null || printf '?')
+    if [[ "$role" == "server" ]]; then
+      endpoint=$(config_value_from_file "$file" bind_addr 2>/dev/null || printf '?')
+    else
+      endpoint=$(config_value_from_file "$file" remote_addr 2>/dev/null || printf '?')
+    fi
+    services=()
+    mapfile -t services < <(find_services_for_config_file "$file" 2>/dev/null)
+    state="unmanaged"
+    if (( ${#services[@]} > 0 )); then
+      state="stopped"
+      for svc in "${services[@]}"; do
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+          state="active"
+          break
+        fi
+      done
+    fi
+    printf '  L%d) %-22s %-7s %-7s %-9s %s' \
+      "$((idx + 1))" "${file##*/}" "$role" "$transport" "$state" "$endpoint"
+    (( ${#services[@]} > 0 )) && printf '  [services: %s]' "${services[*]}"
+    duplicate=$(matching_managed_profile_for_config "$file" 2>/dev/null || true)
+    [[ -n "$duplicate" ]] && printf '  [same config as: %s]' "$duplicate"
+    printf '\n'
+  done
+  printf '  Use "Adopt legacy tunnel" to convert one safely into a managed profile.\n'
+}
+
 list_profiles() {
-  local idx profile file role transport endpoint svc state marker
+  local idx profile file role transport endpoint svc unit_file state marker
   refresh_profile_names
   printf '\n%bProfiles%b\n' "$C_BOLD" "$C_RESET"
   for idx in "${!PROFILE_NAMES[@]}"; do
@@ -2136,12 +2358,176 @@ list_profiles() {
       transport=$(config_value_from_file "$file" transport 2>/dev/null || printf '?')
       if [[ "$role" == "server" ]]; then endpoint=$(config_value_from_file "$file" bind_addr 2>/dev/null || printf '?'); else endpoint=$(config_value_from_file "$file" remote_addr 2>/dev/null || printf '?'); fi
       svc=$(profile_service_name "$profile")
-      state="stopped"; systemctl is-active --quiet "$svc" 2>/dev/null && state="active"
+      unit_file="/etc/systemd/system/${svc}"
+      if [[ ! -f "$unit_file" ]]; then
+        state="no-unit"
+      elif ! profile_service_uses_config_file "$profile" "$file"; then
+        state="mismatch"
+      else
+        state="stopped"
+        systemctl is-active --quiet "$svc" 2>/dev/null && state="active"
+      fi
       printf ' %s%d) %-16s %-7s %-7s %-8s %s\n' "$marker" "$((idx + 1))" "$profile" "$role" "$transport" "$state" "$endpoint"
     else
       printf ' %s%d) %-16s not configured\n' "$marker" "$((idx + 1))" "$profile"
     fi
   done
+  printf '  %b* = selected profile for Manager actions; each row has its own service state.%b\n' "$C_DIM" "$C_RESET"
+  list_legacy_tunnels
+}
+
+rollback_legacy_adoption() {
+  local target_service="$1" target_snapshot="$2" legacy_service="$3" was_active="$4" was_enabled="$5"
+  local old_profile="$6" target_dir="$7" target_unit="/etc/systemd/system/${target_service}"
+  systemctl stop "$target_service" 2>/dev/null || true
+  restore_file "$target_unit" "$target_snapshot"
+  systemctl daemon-reload || true
+  if [[ -n "$legacy_service" ]]; then
+    if [[ "$was_enabled" == "yes" ]]; then systemctl enable "$legacy_service" >/dev/null 2>&1 || true;
+    else systemctl disable "$legacy_service" >/dev/null 2>&1 || true; fi
+    if [[ "$was_active" == "yes" ]]; then systemctl restart "$legacy_service" >/dev/null 2>&1 || true;
+    else systemctl stop "$legacy_service" 2>/dev/null || true; fi
+  fi
+  rm -rf -- "$target_dir"
+  apply_profile_context "$old_profile"
+  save_active_profile "$old_profile" || true
+}
+
+adopt_legacy_config() {
+  local legacy_file="$1" name="$2" source_repo candidate duplicate found=0 legacy_service="" target_service target_unit
+  local old_profile="$ACTIVE_PROFILE" was_active="no" was_enabled="no" target_snapshot="" target_dir archived
+  local -a legacy_services=()
+  if ! validate_profile_name "$name" || [[ "$name" == "default" ]]; then
+    err "Invalid target profile name: ${name}"
+    return 1
+  fi
+  profile_exists "$name" && { err "Profile '${name}' already exists."; return 1; }
+  refresh_legacy_configs
+  for candidate in "${LEGACY_CONFIG_FILES[@]}"; do
+    [[ "$candidate" == "$legacy_file" ]] && { found=1; break; }
+  done
+  (( found )) || { err "Not a detected legacy Backhaul config: ${legacy_file}"; return 1; }
+  duplicate=$(matching_managed_profile_for_config "$legacy_file" 2>/dev/null || true)
+  if [[ -n "$duplicate" ]]; then
+    err "This legacy file is already byte-identical to managed profile '${duplicate}'."
+    info "It stays visible so no tunnel file is hidden; remove the duplicate only after confirming no service still references it."
+    return 1
+  fi
+  [[ -x "$BACKHAUL_BIN" ]] || { err "Backhaul binary is missing; install/configure Backhaul before adopting legacy tunnels."; return 1; }
+  source_repo=$(current_backhaul_source)
+  if ! check_config_compatibility_file "$source_repo" "$legacy_file"; then
+    err "Legacy config is incompatible with ${source_repo}: ${COMPAT_UNSUPPORTED_KEYS[*]}"
+    return 1
+  fi
+
+  ensure_directories
+  mapfile -t legacy_services < <(find_services_for_config_file "$legacy_file" 2>/dev/null)
+  if (( ${#legacy_services[@]} > 1 )); then
+    err "Cannot auto-adopt: multiple systemd services reference this legacy config: ${legacy_services[*]}"
+    info "Resolve the duplicate service ownership first; no files or services were changed."
+    return 1
+  fi
+  if (( ${#legacy_services[@]} == 1 )); then
+    legacy_service="${legacy_services[0]}"
+  fi
+  if [[ "$legacy_service" == "backhaul.service" ]] && profile_exists default; then
+    err "Cannot auto-adopt: backhaul.service references the legacy config while the default profile also exists."
+    info "Keep both tunnels running and inspect 'systemctl cat backhaul.service' before changing this ambiguous legacy layout."
+    return 1
+  fi
+  target_service=$(profile_service_name "$name") || return 1
+  target_unit="/etc/systemd/system/${target_service}"
+  if [[ -e "$target_unit" && "$legacy_service" != "$target_service" ]]; then
+    err "Target service already exists and belongs to another layout: ${target_service}"
+    return 1
+  fi
+  [[ -n "$legacy_service" ]] && systemctl is-active --quiet "$legacy_service" 2>/dev/null && was_active="yes"
+  [[ -n "$legacy_service" ]] && systemctl is-enabled --quiet "$legacy_service" 2>/dev/null && was_enabled="yes"
+  snapshot_file "$target_unit" "legacy-adopt-unit" target_snapshot
+
+  target_dir="${PROFILES_DIR}/${name}"
+  install -d -m 0700 "$target_dir"
+  if ! install -m 0600 "$legacy_file" "$target_dir/config.toml"; then
+    rm -rf -- "$target_dir"
+    return 1
+  fi
+  apply_profile_context "$name" || return 1
+  if ! write_service_file "$source_repo" || ! systemctl daemon-reload; then
+    rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+    return 1
+  fi
+
+  if [[ -n "$legacy_service" && "$legacy_service" != "$target_service" && "$was_active" == "yes" ]]; then
+    if ! systemctl stop "$legacy_service"; then
+      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+      err "Could not stop the legacy service; adoption rolled back."
+      return 1
+    fi
+  fi
+  if [[ "$was_enabled" == "yes" ]]; then
+    if ! systemctl enable "$target_service" >/dev/null; then
+      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+      return 1
+    fi
+  else
+    systemctl disable "$target_service" >/dev/null 2>&1 || true
+  fi
+  if [[ "$was_active" == "yes" ]]; then
+    if ! systemctl restart "$target_service" || ! sleep 1 || ! systemctl is-active --quiet "$target_service"; then
+      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+      err "Managed replacement did not become active; adoption rolled back."
+      return 1
+    fi
+  fi
+  if [[ -n "$legacy_service" && "$legacy_service" != "$target_service" && "$was_enabled" == "yes" ]]; then
+    if ! systemctl disable "$legacy_service" >/dev/null; then
+      rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+      err "Could not disable the old legacy service; adoption rolled back."
+      return 1
+    fi
+  fi
+  if ! save_active_profile "$name"; then
+    rollback_legacy_adoption "$target_service" "$target_snapshot" "$legacy_service" "$was_active" "$was_enabled" "$old_profile" "$target_dir"
+    return 1
+  fi
+
+  if [[ -n "$legacy_service" ]]; then
+    archived="${legacy_file}.adopted.$(date +%Y%m%d-%H%M%S)"
+    if mv -- "$legacy_file" "$archived"; then
+      info "Legacy config archived: ${archived}"
+    else
+      warn "Profile is adopted, but the original legacy config could not be archived: ${legacy_file}"
+    fi
+  else
+    warn "No systemd service referenced this legacy config; the original file was retained for safety."
+    info "The new managed profile is stopped/disabled until you start it explicitly."
+  fi
+  ok "Legacy tunnel adopted as profile '${name}'."
+}
+
+adopt_legacy_config_interactive() {
+  local choice idx file suggestion name
+  refresh_legacy_configs
+  if (( ${#LEGACY_CONFIG_FILES[@]} == 0 )); then
+    info "No unadopted legacy Backhaul configs were detected in ${BASE_CONFIG_DIR}."
+    return 0
+  fi
+  list_legacy_tunnels
+  choice=$(tty_read "Legacy tunnel number (Enter = cancel): ")
+  [[ -n "$choice" ]] || return 0
+  [[ "$choice" =~ ^[0-9]+$ ]] || { warn "Invalid legacy tunnel number."; return 1; }
+  idx=$((10#$choice - 1))
+  (( idx >= 0 && idx < ${#LEGACY_CONFIG_FILES[@]} )) || { warn "Invalid legacy tunnel number."; return 1; }
+  file="${LEGACY_CONFIG_FILES[$idx]}"
+  suggestion=$(legacy_profile_suggestion "$file") || suggestion="legacy-$((idx + 1))"
+  name=$(ask_profile_name_default "Managed profile name" "$suggestion")
+  printf 'Legacy config : %s\n' "$file"
+  printf 'New profile   : %s\n' "$name"
+  ask_yn "Adopt this tunnel without changing its Backhaul settings?" "n" || return 0
+  adopt_legacy_config "$file" "$name" || return 1
+  if ! service_is_active && ask_yn "Profile is stopped. Start and enable it now?" "n"; then
+    service_action start
+  fi
 }
 
 select_profile_interactive() {
@@ -2263,10 +2649,11 @@ delete_profile_interactive() {
 profiles_menu() {
   local choice
   list_profiles
-  printf '\n  1) Select active profile\n'
+  printf '\n  1) Select profile\n'
   printf '  2) Create profile\n'
-  printf '  3) Clone active profile\n'
+  printf '  3) Clone selected profile\n'
   printf '  4) Delete profile\n'
+  printf '  5) Adopt legacy tunnel\n'
   printf '  0) Back\n'
   choice=$(tty_read "Choose: ")
   case "$choice" in
@@ -2274,6 +2661,7 @@ profiles_menu() {
     2) create_profile_interactive ;;
     3) clone_active_profile ;;
     4) delete_profile_interactive ;;
+    5) adopt_legacy_config_interactive ;;
     0|"") return 0 ;;
     *) warn "Invalid choice."; return 1 ;;
   esac
@@ -2394,7 +2782,7 @@ sanitize_config_for_source() {
 }
 
 show_status() {
-  local version="not installed" active="inactive" enabled="disabled" role transport address source_repo="not selected" profile_count=0 profile
+  local version="not installed" active="inactive" enabled="disabled" role transport address source_repo="not selected" profile_count=0 legacy_count=0 profile
   [[ -x "$BACKHAUL_BIN" ]] && version=$("$BACKHAUL_BIN" -v 2>/dev/null || printf 'unknown')
   if ! source_repo=$(read_saved_backhaul_source 2>/dev/null); then
     if [[ -x "$BACKHAUL_BIN" ]]; then
@@ -2403,18 +2791,26 @@ show_status() {
       source_repo="not selected"
     fi
   fi
-  service_is_active && active="active"
+  if service_is_active; then
+    if profile_service_uses_config_file "$ACTIVE_PROFILE" "$CONFIG_FILE"; then
+      active="active"
+    else
+      active="active (config mismatch)"
+    fi
+  fi
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && enabled="enabled"
   role=$(config_role)
   transport=$(config_value transport 2>/dev/null || true)
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do profile_exists "$profile" && ((profile_count += 1)); done
+  refresh_legacy_configs
+  legacy_count=${#LEGACY_CONFIG_FILES[@]}
   if [[ "$role" == server* ]]; then address=$(config_value bind_addr 2>/dev/null || true); else address=$(config_value remote_addr 2>/dev/null || true); fi
   printf '\n%bBackhaul status%b\n' "$C_BOLD" "$C_RESET"
   printf '  Manager    : v%s\n' "$MANAGER_VERSION"
   printf '  Backhaul   : %s\n' "$version"
   printf '  Source     : %s\n' "$source_repo"
-  printf '  Profile    : %s (%s managed)\n' "$ACTIVE_PROFILE" "$profile_count"
+  printf '  Profile    : %s selected (%s managed, %s legacy detected)\n' "$ACTIVE_PROFILE" "$profile_count" "$legacy_count"
   printf '  Role       : %s\n' "$role"
   printf '  Transport  : %s\n' "${transport:-unknown}"
   printf '  Endpoint   : %s\n' "${address:-unknown}"
@@ -2436,7 +2832,18 @@ diagnose() {
     err "Config file is missing."
     ((failures += 1))
   fi
-  if [[ -f "$SERVICE_FILE" ]]; then ok "systemd unit exists."; else err "systemd unit is missing."; ((failures += 1)); fi
+  if [[ -f "$SERVICE_FILE" ]]; then
+    ok "systemd unit exists."
+    if unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+      ok "Service points at the selected profile config."
+    else
+      err "Service/config mismatch: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
+      ((failures += 1))
+    fi
+  else
+    err "systemd unit is missing."
+    ((failures += 1))
+  fi
   if service_is_active; then ok "Service is active."; else err "Service is not active."; ((failures += 1)); fi
   if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then ok "Service is enabled at boot."; else warn "Service is not enabled at boot."; ((warnings += 1)); fi
 
@@ -2481,7 +2888,11 @@ curl_config_escape() {
 show_metrics() {
   local pid memory tasks restarts cpu_mem web_port username password stats auth_file="" auth_value service_state
   printf '\n%b===== Health & metrics: %s =====%b\n' "$C_BOLD" "$ACTIVE_PROFILE" "$C_RESET"
-  if ! profile_exists "$ACTIVE_PROFILE"; then err "Active profile is not configured."; return 1; fi
+  if ! profile_exists "$ACTIVE_PROFILE"; then err "Selected profile is not configured."; return 1; fi
+  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+    err "Refusing mismatched metrics: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
+    return 1
+  fi
   pid=$(systemctl show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || printf '0')
   memory=$(systemctl show "$SERVICE_NAME" -p MemoryCurrent --value 2>/dev/null || printf '?')
   tasks=$(systemctl show "$SERVICE_NAME" -p TasksCurrent --value 2>/dev/null || printf '?')
@@ -2529,6 +2940,11 @@ service_action() {
   local action="$1"
   if [[ ! -f "$SERVICE_FILE" ]]; then
     err "Backhaul is not installed as a managed service."
+    return 1
+  fi
+  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+    err "Refusing service action: ${SERVICE_NAME} does not point at the selected config ${CONFIG_FILE}."
+    info "Open Profiles to inspect detected legacy tunnels or adopt the correct config first."
     return 1
   fi
   case "$action" in
@@ -2663,6 +3079,7 @@ migrate_backhaul_source() {
   validate_backhaul_source "$target_source" || { err "Invalid migration target: ${target_source}"; return 1; }
   managed_installation_exists || { err "No managed installation found."; return 1; }
   [[ -x "$BACKHAUL_BIN" ]] || { err "Backhaul binary is missing."; return 1; }
+  guard_active_legacy_tunnels "migrate the shared Backhaul source" || return 1
   current_source=$(current_backhaul_source)
   [[ "$current_source" != "$target_source" ]] || { warn "Backhaul already uses ${target_source}."; return 2; }
   current_version=$("$BACKHAUL_BIN" -v 2>/dev/null || true)
@@ -2749,6 +3166,7 @@ upgrade_backhaul() {
   validate_version "$version" || { err "Invalid Backhaul version: ${version}"; return 1; }
   version=$(normalize_version "$version")
   managed_installation_exists || { err "No managed installation found. Configure Backhaul first."; return 1; }
+  guard_active_legacy_tunnels "upgrade the shared Backhaul binary" || return 1
   if [[ -z "$source_repo" ]]; then
     source_repo=$(current_backhaul_source)
   fi
@@ -2785,10 +3203,18 @@ show_logs() {
     err "Log line count must be between 1 and 5000."
     return 1
   fi
+  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+    err "Refusing mismatched logs: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
+    return 1
+  fi
   journalctl -u "$SERVICE_NAME" -n "$lines" --no-pager
 }
 
 follow_logs() {
+  if ! unit_file_uses_config_file "$SERVICE_FILE" "$CONFIG_FILE"; then
+    err "Refusing mismatched logs: ${SERVICE_NAME} does not point at ${CONFIG_FILE}."
+    return 1
+  fi
   info "Following logs; press Ctrl+C to stop."
   journalctl -u "$SERVICE_NAME" -f
 }
@@ -2796,14 +3222,19 @@ follow_logs() {
 uninstall_backhaul() {
   local profile svc
   printf '\n%b===== Uninstall Backhaul =====%b\n' "$C_BOLD" "$C_RESET"
+  guard_active_legacy_tunnels "uninstall the shared Backhaul binary" || return 1
   warn "This removes all managed Backhaul services and the shared binary."
   if ! ask_yn "Continue?" "n"; then info "Cancelled."; return 0; fi
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     svc=$(profile_service_name "$profile")
-    systemctl stop "$svc" 2>/dev/null || true
-    systemctl disable "$svc" >/dev/null 2>&1 || true
-    rm -f -- "/etc/systemd/system/${svc}"
+    if profile_exists "$profile" && unit_file_uses_config_file "/etc/systemd/system/${svc}" "$(profile_config_path "$profile")"; then
+      systemctl stop "$svc" 2>/dev/null || true
+      systemctl disable "$svc" >/dev/null 2>&1 || true
+      rm -f -- "/etc/systemd/system/${svc}"
+    elif [[ -e "/etc/systemd/system/${svc}" ]]; then
+      warn "Preserving ${svc}: its ExecStart does not use the managed '${profile}' config."
+    fi
   done
   systemctl daemon-reload
   rm -rf -- "$BACKHAUL_DIR"
@@ -2903,9 +3334,13 @@ interactive_menu() {
       5) service_action restart || true; pause_menu ;;
       6)
         if service_is_active; then
-          ask_yn "Service is active. Stop it?" "n" && service_action stop || true
+          if ask_yn "Service is active. Stop it?" "n"; then
+            service_action stop || true
+          fi
         else
-          ask_yn "Service is stopped. Start it?" "y" && service_action start || true
+          if ask_yn "Service is stopped. Start it?" "y"; then
+            service_action start || true
+          fi
         fi
         pause_menu
         ;;

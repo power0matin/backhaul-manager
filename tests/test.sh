@@ -135,9 +135,9 @@ assert_eq "default service maps to profile" default "$(profile_from_service_name
 assert_eq "named service maps to profile" edge-1 "$(profile_from_service_name backhaul-edge-1.service)"
 assert_failure "unmanaged service name rejected" profile_from_service_name 'backhaul-edge-1.service;id'
 
-assert_eq "low-resource auto tuning" safe "$(recommend_tuning_profile 1 512)"
-assert_eq "general auto tuning" balanced "$(recommend_tuning_profile 2 2048)"
-assert_eq "large-host auto tuning" throughput "$(recommend_tuning_profile 4 4096)"
+assert_eq "low-resource auto tuning" safe "$(recommend_tuning_profile_for_resources 1 512)"
+assert_eq "general auto tuning" balanced "$(recommend_tuning_profile_for_resources 2 2048)"
+assert_eq "large-host auto tuning" throughput "$(recommend_tuning_profile_for_resources 4 4096)"
 assert_success "throughput tuning applied" apply_tuning_profile throughput
 assert_eq "throughput connection pool" 16 "$TUNE_CONNECTION_POOL"
 assert_eq "throughput max pool" 64 "$TUNE_MAX_POOL_SIZE"
@@ -174,6 +174,59 @@ assert_success "generated token alphabet" is_hex_token "$token"
 
 test_tmp=$(mktemp -d /tmp/backhaul-manager-tests.XXXXXX)
 trap 'rm -rf -- "$test_tmp"' EXIT
+
+legacy_root="$test_tmp/legacy-root"
+legacy_units="$test_tmp/legacy-units"
+mkdir -p "$legacy_root" "$legacy_units"
+cat > "$legacy_root/config.toml" <<'EOF'
+[server]
+bind_addr = "0.0.0.0:443"
+transport = "wsmux"
+token = "default-token"
+ports = ["2052"]
+EOF
+cat > "$legacy_root/config-2087.toml" <<'EOF'
+[server]
+bind_addr = "0.0.0.0:2087"
+transport = "wsmux"
+token = "legacy-token"
+ports = ["443"]
+EOF
+cat > "$legacy_root/kharej.toml" <<'EOF'
+[client]
+remote_addr = "192.0.2.10:2087"
+transport = "tcp"
+token = "legacy-token"
+EOF
+cat > "$legacy_root/notes.toml" <<'EOF'
+[server]
+transport = "wsmux"
+EOF
+assert_success "discover root-level legacy configs" refresh_legacy_configs_from_root "$legacy_root"
+assert_eq "legacy discovery excludes default and unrelated TOML" 2 "${#LEGACY_CONFIG_FILES[@]}"
+assert_eq "legacy server config discovered" "$legacy_root/config-2087.toml" "${LEGACY_CONFIG_FILES[0]}"
+assert_eq "legacy client config discovered" "$legacy_root/kharej.toml" "${LEGACY_CONFIG_FILES[1]}"
+assert_eq "legacy filename suggests profile name" 2087 "$(legacy_profile_suggestion "$legacy_root/config-2087.toml")"
+assert_eq "unsafe leading-dash suggestion normalized" legacy-bad "$(legacy_profile_suggestion "$legacy_root/config--bad.toml")"
+cat > "$legacy_units/backhaul-2087.service" <<EOF
+[Service]
+ExecStart=/opt/backhaul/backhaul -c $legacy_root/config-2087.toml
+EOF
+cat > "$legacy_units/unrelated.service" <<EOF
+[Service]
+ExecStart=/opt/backhaul/backhaul -c $legacy_root/config.toml
+EOF
+cat > "$legacy_units/prefix.service" <<EOF
+[Service]
+ExecStart=/opt/backhaul/backhaul -c $legacy_root/config-2087.toml.old
+EOF
+assert_success "unit/config association recognized" unit_file_uses_config_file "$legacy_units/backhaul-2087.service" "$legacy_root/config-2087.toml"
+assert_failure "unit/config association rejects different config" unit_file_uses_config_file "$legacy_units/unrelated.service" "$legacy_root/config-2087.toml"
+assert_failure "unit/config association rejects path prefix" unit_file_uses_config_file "$legacy_units/prefix.service" "$legacy_root/config-2087.toml"
+assert_eq "legacy service discovered from config" backhaul-2087.service "$(find_service_for_config_file "$legacy_root/config-2087.toml" "$legacy_units")"
+mapfile -t matched_legacy_units < <(find_services_for_config_file "$legacy_root/config-2087.toml" "$legacy_units")
+assert_eq "legacy service discovery excludes false matches" 1 "${#matched_legacy_units[@]}"
+
 power_config="$test_tmp/power.toml"
 sanitized_config="$test_tmp/musixal.toml"
 cat > "$power_config" <<'EOF'
