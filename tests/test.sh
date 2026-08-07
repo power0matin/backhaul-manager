@@ -6,9 +6,17 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "${ROOT_DIR}/backhaul-manager.sh"
 
 tests=0
+skipped=0
 
 pass() {
   tests=$((tests + 1))
+}
+
+skip() {
+  local label="$1"
+  tests=$((tests + 1))
+  skipped=$((skipped + 1))
+  printf 'SKIP: %s\n' "$label" >&2
 }
 
 assert_success() {
@@ -253,9 +261,13 @@ printf 'not a gzip archive\n' > "$test_tmp/corrupt.tar.gz"
 assert_failure "corrupt archive rejected" validate_backup_archive "$test_tmp/corrupt.tar.gz"
 tar -czf "$test_tmp/traversal.tar.gz" --transform='s|^\./|../|' -C "$archive_dir" .
 assert_failure "archive traversal rejected" validate_backup_archive "$test_tmp/traversal.tar.gz"
-ln -s data "$archive_dir/link"
-tar -czf "$test_tmp/symlink.tar.gz" -C "$archive_dir" .
-assert_failure "archive symlink rejected" validate_backup_archive "$test_tmp/symlink.tar.gz"
+if ln -s data "$archive_dir/link" 2>/dev/null && [[ -L "$archive_dir/link" ]]; then
+  tar -czf "$test_tmp/symlink.tar.gz" -C "$archive_dir" .
+  assert_failure "archive symlink rejected" validate_backup_archive "$test_tmp/symlink.tar.gz"
+else
+  rm -f -- "$archive_dir/link"
+  skip "archive symlink rejection (host filesystem cannot create a real symlink)"
+fi
 
 assert_success "valid SSH migration target" validate_ssh_target root@example.com
 assert_success "valid IPv6 SSH migration target" validate_ssh_target 'root@[2001:db8::1]'
@@ -270,4 +282,8 @@ assert_eq "stdin/curl-pipe execution" "Backhaul Manager ${MANAGER_VERSION}" "$st
 process_substitution_version=$(bash <(cat "${ROOT_DIR}/backhaul-manager.sh") --version)
 assert_eq "process-substitution execution" "Backhaul Manager ${MANAGER_VERSION}" "$process_substitution_version"
 
-printf 'PASS: %d helper tests\n' "$tests"
+if (( skipped > 0 )); then
+  printf 'PASS: %d helper checks (%d skipped)\n' "$tests" "$skipped"
+else
+  printf 'PASS: %d helper tests\n' "$tests"
+fi

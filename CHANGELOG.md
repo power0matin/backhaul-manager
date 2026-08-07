@@ -50,6 +50,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Make the symlink-security regression portable to Git Bash/Windows: Linux still verifies rejection with a real symlink, while filesystems that cannot create one report an explicit skip instead of a false failure.
 - Force LF line endings for shell scripts, CI YAML, and Markdown so Windows checkouts cannot turn executable Bash files into CRLF files.
 - Fix a backup payload condition that incorrectly mixed a file test into Bash arithmetic and could break real backup creation.
 - Fix PowerMatin → Musixal sanitization so web bind/auth keys are actually removed while `web_port` is forced to `0`.
