@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Keep repository scripts and CI/docs stable when contributors work on Windows.
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
