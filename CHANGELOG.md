@@ -51,6 +51,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Resolve ShellCheck findings in legacy discovery, resource-aware tuning, profile validation, and interactive service controls without suppressing diagnostics.
 - Stop treating the selected profile as the only tunnel: profile rows now report their own service state and flag a systemd unit whose `ExecStart` points at a different config as `mismatch`.
 - Include additional valid root-level tunnel configs in Profiles and `--list-profiles` instead of showing only `/root/backhaul/config.toml`.
 - Refuse service/config-mismatched actions and shared binary/source changes (upgrade, source migration, or uninstall) that could disrupt an active legacy tunnel not yet covered by profile rollback.

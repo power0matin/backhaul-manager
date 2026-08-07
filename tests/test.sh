@@ -135,9 +135,9 @@ assert_eq "default service maps to profile" default "$(profile_from_service_name
 assert_eq "named service maps to profile" edge-1 "$(profile_from_service_name backhaul-edge-1.service)"
 assert_failure "unmanaged service name rejected" profile_from_service_name 'backhaul-edge-1.service;id'
 
-assert_eq "low-resource auto tuning" safe "$(recommend_tuning_profile 1 512)"
-assert_eq "general auto tuning" balanced "$(recommend_tuning_profile 2 2048)"
-assert_eq "large-host auto tuning" throughput "$(recommend_tuning_profile 4 4096)"
+assert_eq "low-resource auto tuning" safe "$(recommend_tuning_profile_for_resources 1 512)"
+assert_eq "general auto tuning" balanced "$(recommend_tuning_profile_for_resources 2 2048)"
+assert_eq "large-host auto tuning" throughput "$(recommend_tuning_profile_for_resources 4 4096)"
 assert_success "throughput tuning applied" apply_tuning_profile throughput
 assert_eq "throughput connection pool" 16 "$TUNE_CONNECTION_POOL"
 assert_eq "throughput max pool" 64 "$TUNE_MAX_POOL_SIZE"
@@ -202,7 +202,7 @@ cat > "$legacy_root/notes.toml" <<'EOF'
 [server]
 transport = "wsmux"
 EOF
-assert_success "discover root-level legacy configs" refresh_legacy_configs "$legacy_root"
+assert_success "discover root-level legacy configs" refresh_legacy_configs_from_root "$legacy_root"
 assert_eq "legacy discovery excludes default and unrelated TOML" 2 "${#LEGACY_CONFIG_FILES[@]}"
 assert_eq "legacy server config discovered" "$legacy_root/config-2087.toml" "${LEGACY_CONFIG_FILES[0]}"
 assert_eq "legacy client config discovered" "$legacy_root/kharej.toml" "${LEGACY_CONFIG_FILES[1]}"

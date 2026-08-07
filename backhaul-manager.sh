@@ -280,8 +280,8 @@ matching_managed_profile_for_config() {
   return 1
 }
 
-refresh_legacy_configs() {
-  local root="${1:-$BASE_CONFIG_DIR}" file role transport endpoint
+refresh_legacy_configs_from_root() {
+  local root="$1" file role transport endpoint
   LEGACY_CONFIG_FILES=()
   [[ -d "$root" ]] || return 0
   for file in "$root"/*.toml; do
@@ -300,6 +300,10 @@ refresh_legacy_configs() {
     validate_endpoint "$endpoint" || continue
     LEGACY_CONFIG_FILES+=("$file")
   done
+}
+
+refresh_legacy_configs() {
+  refresh_legacy_configs_from_root "$BASE_CONFIG_DIR"
 }
 
 legacy_profile_suggestion() {
@@ -884,10 +888,8 @@ reset_config_options() {
   ADV_TLS_VERIFY="true"
 }
 
-recommend_tuning_profile() {
-  local cpu_count="${1:-}" mem_mib="${2:-}"
-  if [[ -z "$cpu_count" ]]; then cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1'); fi
-  if [[ -z "$mem_mib" ]]; then mem_mib=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '0'); fi
+recommend_tuning_profile_for_resources() {
+  local cpu_count="$1" mem_mib="$2"
   [[ "$cpu_count" =~ ^[0-9]+$ ]] || cpu_count=1
   [[ "$mem_mib" =~ ^[0-9]+$ ]] || mem_mib=0
   if (( cpu_count <= 1 || (mem_mib > 0 && mem_mib < 768) )); then
@@ -897,6 +899,13 @@ recommend_tuning_profile() {
   else
     printf 'balanced'
   fi
+}
+
+recommend_tuning_profile() {
+  local cpu_count mem_mib
+  cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')
+  mem_mib=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf '0')
+  recommend_tuning_profile_for_resources "$cpu_count" "$mem_mib"
 }
 
 apply_tuning_profile() {
@@ -2388,7 +2397,10 @@ adopt_legacy_config() {
   local legacy_file="$1" name="$2" source_repo candidate duplicate found=0 legacy_service="" target_service target_unit
   local old_profile="$ACTIVE_PROFILE" was_active="no" was_enabled="no" target_snapshot="" target_dir archived
   local -a legacy_services=()
-  validate_profile_name "$name" && [[ "$name" != "default" ]] || { err "Invalid target profile name: ${name}"; return 1; }
+  if ! validate_profile_name "$name" || [[ "$name" == "default" ]]; then
+    err "Invalid target profile name: ${name}"
+    return 1
+  fi
   profile_exists "$name" && { err "Profile '${name}' already exists."; return 1; }
   refresh_legacy_configs
   for candidate in "${LEGACY_CONFIG_FILES[@]}"; do
@@ -3322,9 +3334,13 @@ interactive_menu() {
       5) service_action restart || true; pause_menu ;;
       6)
         if service_is_active; then
-          ask_yn "Service is active. Stop it?" "n" && service_action stop || true
+          if ask_yn "Service is active. Stop it?" "n"; then
+            service_action stop || true
+          fi
         else
-          ask_yn "Service is stopped. Start it?" "y" && service_action start || true
+          if ask_yn "Service is stopped. Start it?" "y"; then
+            service_action start || true
+          fi
         fi
         pause_menu
         ;;
