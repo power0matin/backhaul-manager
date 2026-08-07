@@ -139,6 +139,10 @@ Manager فقط optionهایی را می‌نویسد که برای source انت
 
 - Profile پیش‌فرض برای سازگاری با نسخه‌های قبلی همان `/root/backhaul/config.toml` و `backhaul.service` است.
 - Profileهای نام‌دار در `/root/backhaul/profiles/<name>/` هستند و سرویسی مثل `backhaul-<name>.service` دارند.
+- configهای قدیمی Backhaul در ریشه مثل `/root/backhaul/config-2087.toml` به‌صورت خودکار به‌عنوان **legacy tunnel** شناسایی و نمایش داده می‌شوند؛ TOML نامرتبط و backupهای timestampدار با الگوی `.bak.*` وارد لیست نمی‌شوند.
+- مرحله Discovery فقط خواندنی است و هیچ فایلی را تغییر نمی‌دهد. با **Profiles → Adopt legacy tunnel** می‌توانید یک config شناسایی‌شده را با تأیید خودتان به Profile نام‌دار تبدیل کنید؛ اگر سرویس مرتبط پیدا شود وضعیت active/enabled آن حفظ می‌شود و در صورت verify نشدن سرویس جایگزین، عملیات rollback می‌شود. اگر سرویسی برای فایل پیدا نشود، فایل اصلی برای اطمینان نگه داشته می‌شود و Profile جدید تا زمان Start دستی متوقف می‌ماند.
+- علامت `*` فقط یعنی آن Profile برای عملیات Manager انتخاب شده است، نه اینکه تنها tunnel فعال باشد. هر Profile وضعیت سرویس خودش را به شکل `active`، `stopped`، `no-unit` یا `mismatch` نشان می‌دهد.
+- عملیات سرویس روی Profile دارای `mismatch` اجرا نمی‌شود و Upgrade/Migration/Uninstall باینری مشترک نیز تا وقتی یک legacy tunnel شناسایی‌شده خارج از Profile management فعال باشد متوقف می‌شود؛ در نتیجه Manager به‌اشتباه tunnel دیگری را restart یا replace نمی‌کند.
 - از منوی Profiles می‌توانید Create، Select، Clone و Delete انجام دهید. هنگام clone یک Profile دارای TLS، cert/key داخل Profile جدید کپی می‌شود تا به Profile مبدا وابسته نماند.
 - Full Backup همه Profileها، active/enabled state سرویس‌ها، binary/source مشترک و TLS قابل‌خواندن را ذخیره می‌کند. `CHECKSUMS` خرابی تصادفی داده را تشخیص می‌دهد.
 - Import فایل `.tar.gz` قبل از extract با دسترسی root، path traversal، link/device، تعداد بیش‌ازحد member، حجم فایل، حجم فشرده و حجم کل extract‌شده را محدود می‌کند. Bundle شامل secret است و امضای دیجیتال ندارد؛ فقط bundle مورد اعتماد خودتان را import کنید.

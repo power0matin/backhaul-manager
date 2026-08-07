@@ -9,6 +9,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Added
 
+- Automatic discovery of valid root-level legacy Backhaul TOML configs (for example `config-2087.toml`) plus explicit, rollback-aware adoption into native named profiles.
 - Manager v3 operations suite with Standard/Advanced configuration modes and resource-aware `safe`, `balanced`, and `throughput` tuning profiles.
 - First-class advanced Backhaul port rules including ranges, local remaps, remote host/IPv4 mappings, and bracketed IPv6 targets with control-port conflict checks.
 - Multiple named profiles with independent root-only config/info files and `backhaul-<profile>.service` units, plus select/create/clone/delete operations.
@@ -31,7 +32,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Changed
 
-- Bumped the Manager runtime version to `3.0.0` for the expanded operations model.
+- Bumped the Manager runtime version to `3.0.1` with backward-compatible legacy tunnel discovery and profile-state corrections.
 - Backhaul upgrades now snapshot the complete managed installation and restart/verify every profile that was active before the shared binary changed.
 - Named-profile TLS clones now copy cert/key material into the cloned profile instead of depending on the source profile's paths.
 - Portable restore regenerates systemd units from the Manager's trusted template and relocates included TLS files into root-only managed profile directories.
@@ -50,6 +51,9 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Stop treating the selected profile as the only tunnel: profile rows now report their own service state and flag a systemd unit whose `ExecStart` points at a different config as `mismatch`.
+- Include additional valid root-level tunnel configs in Profiles and `--list-profiles` instead of showing only `/root/backhaul/config.toml`.
+- Refuse service/config-mismatched actions and shared binary/source changes (upgrade, source migration, or uninstall) that could disrupt an active legacy tunnel not yet covered by profile rollback.
 - Make the symlink-security regression portable to Git Bash/Windows: Linux still verifies rejection with a real symlink, while filesystems that cannot create one report an explicit skip instead of a false failure.
 - Force LF line endings for shell scripts, CI YAML, and Markdown so Windows checkouts cannot turn executable Bash files into CRLF files.
 - Fix a backup payload condition that incorrectly mixed a file test into Bash arithmetic and could break real backup creation.

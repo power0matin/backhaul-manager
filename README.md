@@ -139,6 +139,10 @@ Advanced mode also exposes only options known to exist in the selected release f
 
 - The legacy/default profile remains `/root/backhaul/config.toml` + `backhaul.service` for backward compatibility.
 - Named profiles live under `/root/backhaul/profiles/<name>/` and use `backhaul-<name>.service`.
+- Existing root-level Backhaul configs such as `/root/backhaul/config-2087.toml` are auto-detected and listed as **legacy tunnels** instead of being silently omitted. Unrelated TOML files and timestamped `.bak.*` files are ignored.
+- Legacy discovery is read-only. Use **Profiles → Adopt legacy tunnel** to explicitly convert a detected config into a native named profile; the Manager preserves a detected service's active/enabled state and rolls back if the replacement cannot be verified. If no service references the file, the original is retained and the adopted profile stays stopped until you start it.
+- `*` means the profile currently selected for Manager actions, not the only running tunnel. Every managed profile reports its own `active`, `stopped`, `no-unit`, or `mismatch` service state.
+- Service actions refuse `mismatch` rows, and shared binary/source upgrade, migration, and uninstall operations refuse to proceed while a detected legacy tunnel is still active outside profile management. This prevents Manager operations from silently restarting or replacing the wrong tunnel.
 - Create, select, clone, and delete named profiles from the Profiles menu. TLS clones copy their certificate/key into the new profile so they do not depend on the original profile.
 - A full backup captures every configured profile, service enable/active state, the shared binary/source, and readable TLS files. `CHECKSUMS` validates accidental corruption.
 - Portable `.tar.gz` import rejects traversal paths, links/devices, excessive member counts, oversized compressed members, and excessive expanded data before root extraction. Bundles contain secrets and are not authenticated/signed, so import only bundles you trust.
