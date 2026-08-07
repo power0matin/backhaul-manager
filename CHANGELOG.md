@@ -32,7 +32,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Changed
 
-- Bumped the Manager runtime version to `3.0.1` with backward-compatible legacy tunnel discovery and profile-state corrections.
+- Bumped the Manager runtime version to `3.0.2` with hardened legacy-client migration and rollback validation.
 - Backhaul upgrades now snapshot the complete managed installation and restart/verify every profile that was active before the shared binary changed.
 - Named-profile TLS clones now copy cert/key material into the cloned profile instead of depending on the source profile's paths.
 - Portable restore regenerates systemd units from the Manager's trusted template and relocates included TLS files into root-only managed profile directories.
@@ -51,6 +51,10 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Allow explicitly approved source migration to safely remove known server-only keys such as legacy `heartbeat` from client configs instead of aborting adaptation.
+- Validate backup integrity independently from source-schema compatibility so a byte-for-byte rollback snapshot remains restorable even when a running legacy config contains decoder-ignored keys.
+- Validate every newly created backup before reporting success, and remove an incomplete snapshot if its structure or checksums fail verification.
+- Stage all profile adaptations before committing any of them, reducing partial-config mutation risk during multi-profile source migration.
 - Resolve ShellCheck findings in legacy discovery, resource-aware tuning, profile validation, and interactive service controls without suppressing diagnostics.
 - Stop treating the selected profile as the only tunnel: profile rows now report their own service state and flag a systemd unit whose `ExecStart` points at a different config as `mismatch`.
 - Include additional valid root-level tunnel configs in Profiles and `--list-profiles` instead of showing only `/root/backhaul/config.toml`.
