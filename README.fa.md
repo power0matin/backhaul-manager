@@ -144,10 +144,10 @@ Manager فقط optionهایی را می‌نویسد که برای source انت
 - علامت `*` فقط یعنی آن Profile برای عملیات Manager انتخاب شده است، نه اینکه تنها tunnel فعال باشد. هر Profile وضعیت سرویس خودش را به شکل `active`، `stopped`، `no-unit` یا `mismatch` نشان می‌دهد.
 - عملیات سرویس روی Profile دارای `mismatch` اجرا نمی‌شود و Upgrade/Migration/Uninstall باینری مشترک نیز تا وقتی یک legacy tunnel شناسایی‌شده خارج از Profile management فعال باشد متوقف می‌شود؛ در نتیجه Manager به‌اشتباه tunnel دیگری را restart یا replace نمی‌کند.
 - از منوی Profiles می‌توانید Create، Select، Clone و Delete انجام دهید. هنگام clone یک Profile دارای TLS، cert/key داخل Profile جدید کپی می‌شود تا به Profile مبدا وابسته نماند.
-- Full Backup همه Profileها، active/enabled state سرویس‌ها، binary/source مشترک و TLS قابل‌خواندن را ذخیره می‌کند. `CHECKSUMS` خرابی تصادفی داده را تشخیص می‌دهد.
+- Full Backup همه Profileها، active/enabled state سرویس‌ها، binary/source مشترک و TLS قابل‌خواندن را ذخیره می‌کند. هر snapshot قبل از اعلام موفقیت با checksum بررسی می‌شود و اعتبار rollback از compatibility مهاجرت جداست تا configهای legacy دارای keyهای نادیده‌گرفته‌شده نیز دقیقاً قابل بازیابی باشند.
 - Import فایل `.tar.gz` قبل از extract با دسترسی root، path traversal، link/device، تعداد بیش‌ازحد member، حجم فایل، حجم فشرده و حجم کل extract‌شده را محدود می‌کند. Bundle شامل secret است و امضای دیجیتال ندارد؛ فقط bundle مورد اعتماد خودتان را import کنید.
 - مهاجرت سروربه‌سرور همان bundle را روی SSH منتقل می‌کند، permission مقصد را `0600` می‌کند و در صورت تأیید restore را روی سرور مقصد اجرا می‌کند.
-- مهاجرت source همه Profileها را قبل از تغییر binary بررسی می‌کند. در PowerMatin → Musixal فقط keyهای شناخته‌شده مخصوص fork با تأیید شما حذف می‌شوند و metrics ناامن Musixal خاموش می‌شود. Downgrade همیشه تأیید تعاملی جدا می‌خواهد.
+- مهاجرت source همه Profileها را قبل از تغییر binary بررسی می‌کند. با تأیید صریح فقط keyهای شناخته‌شده و امنِ fork-specific یا legacy role-mismatch (مثل `heartbeat` سمت server که در config قدیمی client مانده) حذف می‌شوند؛ metrics ناامن Musixal نیز خاموش می‌شود. تغییرات همه Profileها قبل از commit ابتدا stage می‌شوند و Downgrade همیشه تأیید تعاملی جدا می‌خواهد.
 
 ## دستورات مستقیم CLI
 

@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly MANAGER_VERSION="3.0.1"
+readonly MANAGER_VERSION="3.0.2"
 readonly BACKHAUL_DIR="/opt/backhaul"
 readonly BACKHAUL_BIN="${BACKHAUL_DIR}/backhaul"
 readonly BASE_CONFIG_DIR="/root/backhaul"
@@ -1204,12 +1204,17 @@ create_backup() {
   } > "$dir/MANIFEST"
   chmod 0600 "$dir/MANIFEST"
   backup_checksum_file "$dir"
+  if ! validate_backup_tree "$dir"; then
+    rm -rf -- "$dir"
+    err "Backup integrity validation failed; the incomplete snapshot was removed."
+    return 1
+  fi
   LAST_BACKUP_DIR="$dir"
   ok "Backup created: ${dir}"
 }
 
 validate_backup_tree() {
-  local dir="$1" schema source_repo profile_dir profile name
+  local dir="$1" schema source_repo profile_dir profile name role transport
   [[ -d "$dir" && -f "$dir/MANIFEST" && -f "$dir/CHECKSUMS" && -f "$dir/services.state" ]] || return 1
   schema=$(manifest_value "$dir/MANIFEST" schema 2>/dev/null || true)
   [[ "$schema" == "1" ]] || return 1
@@ -1225,7 +1230,13 @@ validate_backup_tree() {
       name="${profile_dir##*/}"
       validate_profile_name "$name" || return 1
       [[ -f "$profile_dir/config.toml" ]] || return 1
-      check_config_compatibility_file "$source_repo" "$profile_dir/config.toml" || return 1
+      # Rollback snapshots preserve the installation exactly as it was,
+      # including legacy keys that a running Backhaul decoder may ignore.
+      # Source compatibility belongs to migration checks, not integrity.
+      role=$(config_role_from_file "$profile_dir/config.toml")
+      [[ "$role" == "server" || "$role" == "client" ]] || return 1
+      transport=$(config_value_from_file "$profile_dir/config.toml" transport 2>/dev/null || true)
+      validate_transport "$transport" || return 1
     done
   fi
   profile=$(manifest_value "$dir/MANIFEST" active_profile 2>/dev/null || printf 'default')
@@ -2749,9 +2760,11 @@ show_compatibility() {
 }
 
 sanitize_config_for_source() {
-  local source_repo="$1" input="$2" output="$3" tmp key had_power_web=0
+  local source_repo="$1" input="$2" output="$3" tmp key role had_power_web=0
   validate_backhaul_source "$source_repo" || return 1
   [[ -f "$input" ]] || return 1
+  role=$(config_role_from_file "$input")
+  [[ "$role" == "server" || "$role" == "client" ]] || return 1
   tmp="${output}.tmp.$$"
   cp -a -- "$input" "$tmp"
   if check_config_compatibility_file "$source_repo" "$input"; then
@@ -2761,11 +2774,41 @@ sanitize_config_for_source() {
   for key in "${COMPAT_UNSUPPORTED_KEYS[@]}"; do
     case "$key" in
       web_bind_addr|web_username|web_password)
-        had_power_web=1
-        sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        if [[ "$source_repo" == "$MUSIXAL_BACKHAUL_REPO" ]]; then
+          had_power_web=1
+          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        else
+          rm -f -- "$tmp"
+          return 1
+        fi
         ;;
       max_pool_size|tls_verify|udp_queue_size|udp_queue_limit|udp_max_flows)
-        sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        if [[ "$role" == "server" && ( "$key" == "max_pool_size" || "$key" == "tls_verify" ) ]]; then
+          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        elif [[ "$role" == "client" && "$key" == udp_* ]]; then
+          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        elif [[ "$source_repo" == "$MUSIXAL_BACKHAUL_REPO" ]]; then
+          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        else
+          rm -f -- "$tmp"
+          return 1
+        fi
+        ;;
+      heartbeat|bind_addr|channel_size|ports|tls_cert|tls_key|mux_con|accept_udp|proxy_protocol)
+        if [[ "$role" == "client" ]]; then
+          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        else
+          rm -f -- "$tmp"
+          return 1
+        fi
+        ;;
+      remote_addr|connection_pool|retry_interval|dial_timeout|aggressive_pool|edge_ip)
+        if [[ "$role" == "server" ]]; then
+          sed -i -E "/^[[:space:]]*${key}[[:space:]]*=/d" "$tmp"
+        else
+          rm -f -- "$tmp"
+          return 1
+        fi
         ;;
       *) rm -f -- "$tmp"; return 1 ;;
     esac
@@ -3058,7 +3101,8 @@ print_incompatible_profiles() {
 }
 
 sanitize_all_profiles_for_source() {
-  local source_repo="$1" profile file migrated
+  local source_repo="$1" profile file migrated idx
+  local -a original_files=() staged_files=()
   refresh_profile_names
   for profile in "${PROFILE_NAMES[@]}"; do
     profile_exists "$profile" || continue
@@ -3066,10 +3110,19 @@ sanitize_all_profiles_for_source() {
     migrated="${file}.migrated.$$"
     if ! sanitize_config_for_source "$source_repo" "$file" "$migrated"; then
       rm -f -- "$migrated"
+      for migrated in "${staged_files[@]}"; do rm -f -- "$migrated"; done
       err "Could not safely adapt profile '${profile}' for ${source_repo}."
       return 1
     fi
-    mv -f -- "$migrated" "$file"
+    original_files+=("$file")
+    staged_files+=("$migrated")
+  done
+  for idx in "${!original_files[@]}"; do
+    if ! mv -f -- "${staged_files[$idx]}" "${original_files[$idx]}"; then
+      for migrated in "${staged_files[@]:$((idx + 1))}"; do rm -f -- "$migrated"; done
+      err "Could not commit the staged profile adaptations."
+      return 1
+    fi
   done
 }
 

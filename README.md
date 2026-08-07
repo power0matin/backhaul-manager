@@ -144,10 +144,10 @@ Advanced mode also exposes only options known to exist in the selected release f
 - `*` means the profile currently selected for Manager actions, not the only running tunnel. Every managed profile reports its own `active`, `stopped`, `no-unit`, or `mismatch` service state.
 - Service actions refuse `mismatch` rows, and shared binary/source upgrade, migration, and uninstall operations refuse to proceed while a detected legacy tunnel is still active outside profile management. This prevents Manager operations from silently restarting or replacing the wrong tunnel.
 - Create, select, clone, and delete named profiles from the Profiles menu. TLS clones copy their certificate/key into the new profile so they do not depend on the original profile.
-- A full backup captures every configured profile, service enable/active state, the shared binary/source, and readable TLS files. `CHECKSUMS` validates accidental corruption.
+- A full backup captures every configured profile, service enable/active state, the shared binary/source, and readable TLS files. Every snapshot is checksum-verified before success is reported, and rollback integrity remains independent from migration compatibility so legacy decoder-ignored keys can still be restored exactly.
 - Portable `.tar.gz` import rejects traversal paths, links/devices, excessive member counts, oversized compressed members, and excessive expanded data before root extraction. Bundles contain secrets and are not authenticated/signed, so import only bundles you trust.
 - Server-to-server migration exports the same bundle, sends it over SSH, forces the remote copy to mode `0600`, and can run a verified restore remotely.
-- Source migration checks all profiles before changing the shared binary. Moving PowerMatin → Musixal can explicitly remove only known fork-specific keys; unsafe Musixal web metrics are disabled during adaptation. Downgrades always require interactive confirmation.
+- Source migration checks all profiles before changing the shared binary. Explicit adaptation can remove only known-safe fork-specific or role-mismatched legacy keys (for example a server-only `heartbeat` left in an old client config); unsafe Musixal web metrics are disabled during adaptation. All profile rewrites are staged before commit, and downgrades always require interactive confirmation.
 
 ## Direct CLI Operations
 

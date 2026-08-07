@@ -250,6 +250,50 @@ assert_eq "sanitizer disables unsafe Musixal web monitor" 0 "$(config_value_from
 assert_failure "sanitizer removes adaptive pool key" grep -q '^max_pool_size[[:space:]]*=' "$sanitized_config"
 assert_failure "sanitizer removes fork web auth key" grep -q '^web_username[[:space:]]*=' "$sanitized_config"
 
+# Older client configs sometimes carried the server-only heartbeat key. Both
+# Backhaul families ignore/omit it on ClientConfig, so explicit migration may
+# remove it without changing any effective client setting.
+legacy_client_config="$test_tmp/legacy-client-heartbeat.toml"
+power_legacy_sanitized="$test_tmp/power-legacy-client.toml"
+musixal_legacy_sanitized="$test_tmp/musixal-legacy-client.toml"
+cat > "$legacy_client_config" <<'EOF'
+[client]
+remote_addr = "127.0.0.1:8080"
+transport = "wsmux"
+token = "test-token"
+connection_pool = 8
+heartbeat = 40
+retry_interval = 3
+EOF
+assert_failure "legacy client heartbeat rejected by power schema" check_config_compatibility_file power0matin/Backhaul "$legacy_client_config"
+assert_failure "legacy client heartbeat rejected by Musixal schema" check_config_compatibility_file Musixal/Backhaul "$legacy_client_config"
+assert_success "legacy client heartbeat safely removed for power" sanitize_config_for_source power0matin/Backhaul "$legacy_client_config" "$power_legacy_sanitized"
+assert_success "adapted legacy client passes power schema" check_config_compatibility_file power0matin/Backhaul "$power_legacy_sanitized"
+assert_failure "power adaptation removes client heartbeat" grep -q '^heartbeat[[:space:]]*=' "$power_legacy_sanitized"
+assert_success "legacy client heartbeat safely removed for Musixal" sanitize_config_for_source Musixal/Backhaul "$legacy_client_config" "$musixal_legacy_sanitized"
+assert_success "adapted legacy client passes Musixal schema" check_config_compatibility_file Musixal/Backhaul "$musixal_legacy_sanitized"
+assert_failure "Musixal adaptation removes client heartbeat" grep -q '^heartbeat[[:space:]]*=' "$musixal_legacy_sanitized"
+
+# Backup integrity must be independent from migration compatibility. A
+# checksum-valid snapshot of a running legacy config has to remain restorable
+# even when the config contains an ignored, role-mismatched key.
+legacy_backup="$test_tmp/legacy-backup"
+mkdir -p "$legacy_backup/profiles/default"
+cp "$legacy_client_config" "$legacy_backup/profiles/default/config.toml"
+cat > "$legacy_backup/MANIFEST" <<'EOF'
+schema=1
+created=2026-08-07T00:00:00Z
+manager_version=3.0.2
+backhaul_version=v0.7.2
+source=Musixal/Backhaul
+active_profile=default
+EOF
+: > "$legacy_backup/services.state"
+backup_checksum_file "$legacy_backup"
+assert_success "legacy config backup passes integrity validation" validate_backup_tree "$legacy_backup"
+printf 'corruption\n' >> "$legacy_backup/profiles/default/config.toml"
+assert_failure "backup checksum corruption still rejected" validate_backup_tree "$legacy_backup"
+
 # Exercise the actual config writers against the release-specific schema
 # matrix, not only their individual validation helpers.
 generated_dir="$test_tmp/generated"
