@@ -18,7 +18,9 @@ jobs:
       - name: Check Bash syntax
         run: bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh
       - name: Run ShellCheck
-        run: shellcheck backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh
+        run: |
+          shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh
+          shellcheck --exclude=SC2317 tests/test.sh
       - name: Run regression and failure-injection tests
         run: |
           bash test.sh

@@ -4044,7 +4044,7 @@ diagnose() {
   service_binary=$(selected_service_binary_path 2>/dev/null || true)
   if [[ -x "$BACKHAUL_BIN" ]] && managed_version=$(backhaul_binary_version "$BACKHAUL_BIN" 2>/dev/null); then
     ok "Managed binary installed: ${BACKHAUL_BIN} (${managed_version})"
-  elif [[ ! -n "$service_binary" ]]; then
+  elif [[ -z "$service_binary" ]]; then
     err "Backhaul binary is missing or invalid for the selected service."
     ((failures += 1))
   fi

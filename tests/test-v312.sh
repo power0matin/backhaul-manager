@@ -108,9 +108,9 @@ assert_success "failed service start restores stopped/disabled state" failed_sta
 # Existing managed binaries are always version-read through the hardened timeout helper.
 server_fn=$(declare -f configure_server)
 client_fn=$(declare -f configure_client)
-assert_contains "server config uses hardened installed version helper" "$server_fn" 'version=$(installed_backhaul_version)'
-assert_contains "client config uses hardened installed version helper" "$client_fn" 'version=$(installed_backhaul_version)'
-if grep -Fq 'version=$("$BACKHAUL_BIN" -v' <<<"$server_fn$client_fn"; then fail "raw unbounded -v call remains in configure path"; else pass; fi
+assert_contains "server config uses hardened installed version helper" "$server_fn" "version=\$(installed_backhaul_version)"
+assert_contains "client config uses hardened installed version helper" "$client_fn" "version=\$(installed_backhaul_version)"
+if grep -Fq "version=\$(\"\$BACKHAUL_BIN\" -v" <<<"$server_fn$client_fn"; then fail "raw unbounded -v call remains in configure path"; else pass; fi
 
 # CLI dispatch: every documented option routes to the intended operation.
 cli_route() (
@@ -195,7 +195,7 @@ submenu_route() (
   create_backup(){ marker=backup; }
   list_backups(){ marker=list-backup; }
   restore_backup_interactive(){ marker=restore; }
-  export_backup_interactive(){ marker=export; }
+  export_backup_interactive(){ marker='export'; }
   import_backup_interactive(){ marker=import; }
   remote_migration_interactive(){ marker=remote; }
   delete_backup_interactive(){ marker=delete-backup; }
