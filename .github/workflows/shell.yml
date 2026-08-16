@@ -16,11 +16,12 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check Bash syntax
-        run: bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh
+        run: bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh
       - name: Run ShellCheck
-        run: shellcheck backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh
+        run: shellcheck backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh
       - name: Run regression and failure-injection tests
         run: |
           bash test.sh
           bash tests/test.sh
           bash tests/test-v311.sh
+          bash tests/test-v312.sh
