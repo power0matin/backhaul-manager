@@ -23,7 +23,16 @@ jobs:
           shellcheck --exclude=SC2317,SC2034 tests/test.sh
       - name: Run regression and failure-injection tests
         run: |
-          bash test.sh
-          bash tests/test.sh
-          bash tests/test-v311.sh
-          bash tests/test-v312.sh
+          rc=0
+          for suite in test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh; do
+            echo "::group::${suite}"
+            if bash "${suite}"; then
+              echo "PASS: ${suite}"
+            else
+              suite_rc=$?
+              echo "::error title=Regression suite failed::${suite} exited with ${suite_rc}"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${rc}"

@@ -2559,7 +2559,12 @@ download_backhaul() {
   requested=$(normalize_version "$requested")
   release_base=$(backhaul_release_base "$source_repo") || return 1
   asset=$(detect_arch_asset) || return 1
-  ensure_directories || return 1
+  # A staged download is read-only with respect to the managed installation.
+  # Callers use this mode for provenance/compatibility verification and may run
+  # without permission to create production directories such as /root/backhaul.
+  if [[ -z "$stage_path" ]]; then
+    ensure_directories || return 1
+  fi
 
   if [[ "$requested" == "latest" ]]; then
     url="${release_base}/latest/download/${asset}"

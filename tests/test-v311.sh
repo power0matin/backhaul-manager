@@ -128,6 +128,9 @@ EOF_BIN
   stage="$fixture/staged"
   detect_arch_asset() { printf 'backhaul_linux_amd64.tar.gz'; }
   backhaul_release_base() { printf 'https://example.invalid/releases'; }
+  # Staged downloads must not prepare or mutate production installation paths.
+  # Returning failure here makes the regression deterministic even when tests run as root.
+  ensure_directories() { return 99; }
   curl() {
     local out="" arg url=""
     while (($#)); do
