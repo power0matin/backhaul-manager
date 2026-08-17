@@ -12,6 +12,8 @@
 </p>
 <!-- repo-badges:end -->
 
+> **Official project page:** [matinshahabadi.ir/projects/backhaul-manager/](https://matinshahabadi.ir/projects/backhaul-manager/)
+
 **Safe, interactive installer and operations manager for [power0matin/Backhaul](https://github.com/power0matin/Backhaul) and [Musixal/Backhaul](https://github.com/Musixal/Backhaul)**
 
 One script for both the Iran-side server and the foreign client, with profiles, source migration, verified backups, health metrics, rollback, and service management built in.
