@@ -160,6 +160,7 @@ assert_success "wsmux transport" validate_transport wsmux
 assert_success "udp transport" validate_transport udp
 assert_failure "unknown transport" validate_transport quic
 assert_eq "UDP protocol" udp "$(transport_protocol udp)"
+assert_eq "control channel is always TCP" tcp "$(control_protocol)"
 assert_eq "wsmux protocol" tcp "$(transport_protocol wsmux)"
 assert_success "proxy protocol supported on wsmux" transport_supports_proxy_protocol wsmux
 assert_failure "proxy protocol not offered on udp" transport_supports_proxy_protocol udp

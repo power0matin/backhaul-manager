@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly MANAGER_VERSION="3.2.0"
+readonly MANAGER_VERSION="3.2.1"
 readonly BACKHAUL_DIR="/opt/backhaul"
 readonly BACKHAUL_BIN="${BACKHAUL_DIR}/backhaul"
 readonly BASE_CONFIG_DIR="/root/backhaul"
@@ -1323,6 +1323,10 @@ transport_protocol() {
   [[ "$1" == "udp" ]] && printf 'udp' || printf 'tcp'
 }
 
+control_protocol() {
+  printf 'tcp'
+}
+
 transport_supports_proxy_protocol() {
   [[ "$1" == "tcp" || "$1" == "tcpmux" || "$1" == "wsmux" || "$1" == "wssmux" ]]
 }
@@ -1906,13 +1910,13 @@ service_health_probe() {
     endpoint=$(config_value_from_file "$config_file" bind_addr 2>/dev/null || true)
     validate_endpoint "$endpoint" || return 1
     port="${endpoint##*:}"; port="${port%]}"
-    protocol=$(transport_protocol "$transport")
+    protocol=$(control_protocol)
     check_listening_port_for_pid "$port" "$protocol" "$pid"
   elif [[ "$role" == "client" ]]; then
     endpoint=$(config_value_from_file "$config_file" remote_addr 2>/dev/null || true)
     validate_endpoint "$endpoint" || return 1
     port="${endpoint##*:}"; port="${port%]}"
-    protocol=$(transport_protocol "$transport")
+    protocol=$(control_protocol)
     if check_connected_peer_for_pid "$port" "$protocol" "$pid"; then
       return 0
     fi
@@ -2938,10 +2942,10 @@ preflight_server_ports() {
   local control_port="$1" protocol="$2" p details conflicts=0 line local_addr rule current_pid
   current_pid=$(systemctl show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || printf '0')
   [[ "$current_pid" =~ ^[0-9]+$ ]] || current_pid=0
-  details=$(port_conflict_details "$control_port" "$protocol")
+  details=$(port_conflict_details "$control_port" "$(control_protocol)")
   if [[ -n "$details" ]]; then
     ((conflicts += 1))
-    warn "Control port ${control_port}/${protocol} is already used by another local process:"
+    warn "Control port ${control_port}/$(control_protocol) is already used by another local process:"
     printf '  %s\n' "$details"
   fi
   while IFS= read -r line; do
@@ -3157,15 +3161,16 @@ configure_server() {
   fi
 
   printf '\n%bListening-port check:%b\n' "$C_BOLD" "$C_RESET"
-  if check_listening_port "$control_port" "$protocol"; then ok "Control port ${control_port}/${protocol} is listening."; else warn "Control port ${control_port}/${protocol} is not listening yet."; fi
+  if check_listening_port "$control_port" "$(control_protocol)"; then ok "Control port ${control_port}/$(control_protocol) is listening."; else warn "Control port ${control_port}/$(control_protocol) is not listening yet."; fi
   if [[ "$CONFIG_MODE" == "standard" ]]; then
     for p in "${PARSED_PORTS[@]}"; do
       if check_listening_port "$p" "$protocol"; then ok "Tunnel port ${p}/${protocol} is listening."; else warn "Tunnel port ${p}/${protocol} is not listening yet."; fi
     done
-    firewall_hint "$protocol" "$control_port" "${PARSED_PORTS[@]}"
+    firewall_hint "$(control_protocol)" "$control_port"
+    firewall_hint "$protocol" "${PARSED_PORTS[@]}"
   else
     info "Advanced port rules are active; use Diagnostics for post-start rule checks."
-    firewall_hint "$protocol" "$control_port"
+    firewall_hint "$(control_protocol)" "$control_port"
   fi
   if ! save_backhaul_source "$source_repo"; then
     err "Configuration succeeded but source state could not be persisted; rolling back for consistency."
@@ -3248,21 +3253,12 @@ configure_client() {
     return 1
   fi
 
-  protocol=$(transport_protocol "$transport")
   if command -v nc >/dev/null 2>&1; then
-    info "Testing ${remote_addr} (${protocol})..."
-    if [[ "$protocol" == "udp" ]]; then
-      if nc -z -u -w5 "$iran_host" "$control_port" >/dev/null 2>&1; then
-        ok "UDP reachability probe completed."
-      else
-        warn "UDP reachability probe failed or was inconclusive."
-      fi
+    info "Testing ${remote_addr} (tcp)..."
+    if nc -z -w5 "$iran_host" "$control_port" >/dev/null 2>&1; then
+      ok "Iran control port is reachable."
     else
-      if nc -z -w5 "$iran_host" "$control_port" >/dev/null 2>&1; then
-        ok "Iran control port is reachable."
-      else
-        warn "Could not reach the Iran control port; check routing and firewall rules."
-      fi
+      warn "Could not reach the Iran control port; check routing and firewall rules."
     fi
   fi
   if ! save_backhaul_source "$source_repo"; then
@@ -4118,7 +4114,7 @@ diagnose() {
 
   role=$(config_role)
   transport=$(config_value transport 2>/dev/null || true)
-  protocol=$(transport_protocol "${transport:-tcp}")
+  protocol=$(control_protocol)
   if [[ "$role" == server* ]]; then
     endpoint=$(config_value bind_addr 2>/dev/null || true)
     port="${endpoint##*:}"

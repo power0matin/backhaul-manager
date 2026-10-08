@@ -60,6 +60,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Health checks, preflight, diagnostics and firewall hints now treat the control port of every transport, including `udp`, as TCP; previously a healthy `udp` server was rolled back because a UDP listener was expected on the control port.
 - Stop/disable/daemon-reload failures can no longer be masked by Bash conditional `errexit` semantics during configure, service actions, profile deletion, uninstall, backup restore, upgrade, or source migration.
 - Interrupting an active transactional operation with `SIGINT`/`SIGTERM` now invokes its rollback handler; legacy adoption commits before archiving the old config so rollback can never reference a path already moved away.
 - Full restore now checks every filesystem/systemd mutation explicitly instead of continuing after a failed write/remove while called from a conditional context.
