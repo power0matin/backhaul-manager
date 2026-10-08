@@ -73,6 +73,7 @@ assert_success "power0matin source accepted" validate_backhaul_source power0mati
 assert_success "Musixal source accepted" validate_backhaul_source Musixal/Backhaul
 assert_failure "unknown source rejected" validate_backhaul_source attacker/Backhaul
 assert_failure "source path injection rejected" validate_backhaul_source '../../releases'
+assert_success "unknown source accepted only as internal state" validate_backhaul_source_or_unknown unknown
 assert_eq "recommended source" power0matin/Backhaul "$DEFAULT_BACKHAUL_SOURCE"
 assert_eq "power0matin release base" 'https://github.com/power0matin/Backhaul/releases' "$(backhaul_release_base power0matin/Backhaul)"
 assert_eq "Musixal release base" 'https://github.com/Musixal/Backhaul/releases' "$(backhaul_release_base Musixal/Backhaul)"
@@ -84,6 +85,11 @@ assert_success "prerelease is older than stable" version_is_older v0.8.0-beta.1 
 assert_failure "stable is newer than prerelease" version_is_older v0.8.0 v0.8.0-beta.1
 assert_success "numeric prerelease identifier has lower precedence" version_is_older v0.8.0-alpha.1 v0.8.0-alpha.beta
 assert_failure "build metadata does not change precedence" version_is_older v0.8.0+build.1 v0.8.0+build.2
+assert_failure "read-only status does not require mutation lock" operation_requires_lock --status
+assert_failure "read-only compatibility does not require mutation lock" operation_requires_lock --compat
+assert_success "interactive manager requires mutation lock" operation_requires_lock ''
+assert_success "upgrade requires mutation lock" operation_requires_lock --upgrade
+assert_success "source recording requires mutation lock" operation_requires_lock --set-source
 
 source_choice_input=""
 tty_read() { printf '%s' "$source_choice_input"; }
@@ -135,9 +141,9 @@ assert_eq "default service maps to profile" default "$(profile_from_service_name
 assert_eq "named service maps to profile" edge-1 "$(profile_from_service_name backhaul-edge-1.service)"
 assert_failure "unmanaged service name rejected" profile_from_service_name 'backhaul-edge-1.service;id'
 
-assert_eq "low-resource auto tuning" safe "$(recommend_tuning_profile 1 512)"
-assert_eq "general auto tuning" balanced "$(recommend_tuning_profile 2 2048)"
-assert_eq "large-host auto tuning" throughput "$(recommend_tuning_profile 4 4096)"
+assert_eq "low-resource auto tuning" safe "$(recommend_tuning_profile_for_resources 1 512)"
+assert_eq "general auto tuning" balanced "$(recommend_tuning_profile_for_resources 2 2048)"
+assert_eq "large-host auto tuning" throughput "$(recommend_tuning_profile_for_resources 4 4096)"
 assert_success "throughput tuning applied" apply_tuning_profile throughput
 assert_eq "throughput connection pool" 16 "$TUNE_CONNECTION_POOL"
 assert_eq "throughput max pool" 64 "$TUNE_MAX_POOL_SIZE"
@@ -175,6 +181,58 @@ assert_success "generated token alphabet" is_hex_token "$token"
 test_tmp=$(mktemp -d /tmp/backhaul-manager-tests.XXXXXX)
 trap 'rm -rf -- "$test_tmp"' EXIT
 
+parser_config="$test_tmp/parser.toml"
+cat > "$parser_config" <<'EOF'
+[server] # inline section comment
+bind_addr = "0.0.0.0:8443" # public control listener
+transport = 'wsmux' # literal string is valid TOML
+token = "value#inside-string" # the hash inside the string is data
+web_port = 0 # numeric scalar
+EOF
+assert_eq "role parser accepts section comment" server "$(config_role_from_file "$parser_config")"
+assert_eq "value parser strips inline comment" 0.0.0.0:8443 "$(config_value_from_file "$parser_config" bind_addr)"
+assert_eq "value parser accepts single quoted string" wsmux "$(config_value_from_file "$parser_config" transport)"
+assert_eq "value parser preserves hash in quotes" 'value#inside-string' "$(config_value_from_file "$parser_config" token)"
+assert_eq "value parser reads unquoted scalar" 0 "$(config_value_from_file "$parser_config" web_port)"
+
+ambiguous_config="$test_tmp/ambiguous.toml"
+cat > "$ambiguous_config" <<'EOF'
+[server]
+transport = "wsmux"
+[client]
+transport = "wsmux"
+EOF
+assert_eq "role parser rejects ambiguous server/client file" unknown "$(config_role_from_file "$ambiguous_config")"
+
+compatibility_failure_has_no_false_crash_banner() {
+  local output
+  if output=$(show_compatibility attacker/Backhaul "$parser_config" 2>&1); then
+    return 1
+  fi
+  [[ "$output" == *"Invalid compatibility target"* && "$output" != *"Command failed at line"* ]]
+}
+assert_success "expected compatibility failure has no false crash banner" compatibility_failure_has_no_false_crash_banner
+
+client_health_established_test() {
+  printf '%s\n' 'control channel established successfully' | client_control_channel_healthy
+}
+client_health_disconnected_test() {
+  printf '%s\n' \
+    'control channel established successfully' \
+    'control channel has been closed by the server' \
+    'attempting to establish a new wsmux control channel connection' \
+    | client_control_channel_healthy
+}
+client_health_recovered_test() {
+  printf '%s\n' \
+    'attempting to establish a new wsmux control channel connection' \
+    'control channel established successfully' \
+    | client_control_channel_healthy
+}
+assert_success "client health accepts established control channel" client_health_established_test
+assert_failure "client health rejects stale success after disconnect" client_health_disconnected_test
+assert_success "client health accepts a later reconnection" client_health_recovered_test
+
 legacy_root="$test_tmp/legacy-root"
 legacy_units="$test_tmp/legacy-units"
 mkdir -p "$legacy_root" "$legacy_units"
@@ -202,7 +260,7 @@ cat > "$legacy_root/notes.toml" <<'EOF'
 [server]
 transport = "wsmux"
 EOF
-assert_success "discover root-level legacy configs" refresh_legacy_configs "$legacy_root"
+assert_success "discover root-level legacy configs" refresh_legacy_configs_from_root "$legacy_root"
 assert_eq "legacy discovery excludes default and unrelated TOML" 2 "${#LEGACY_CONFIG_FILES[@]}"
 assert_eq "legacy server config discovered" "$legacy_root/config-2087.toml" "${LEGACY_CONFIG_FILES[0]}"
 assert_eq "legacy client config discovered" "$legacy_root/kharej.toml" "${LEGACY_CONFIG_FILES[1]}"
@@ -221,11 +279,95 @@ cat > "$legacy_units/prefix.service" <<EOF
 ExecStart=/opt/backhaul/backhaul -c $legacy_root/config-2087.toml.old
 EOF
 assert_success "unit/config association recognized" unit_file_uses_config_file "$legacy_units/backhaul-2087.service" "$legacy_root/config-2087.toml"
+assert_success "plain Backhaul unit is safe for restore" unit_file_safe_for_restore "$legacy_units/backhaul-2087.service" "$legacy_root/config-2087.toml"
 assert_failure "unit/config association rejects different config" unit_file_uses_config_file "$legacy_units/unrelated.service" "$legacy_root/config-2087.toml"
 assert_failure "unit/config association rejects path prefix" unit_file_uses_config_file "$legacy_units/prefix.service" "$legacy_root/config-2087.toml"
 assert_eq "legacy service discovered from config" backhaul-2087.service "$(find_service_for_config_file "$legacy_root/config-2087.toml" "$legacy_units")"
 mapfile -t matched_legacy_units < <(find_services_for_config_file "$legacy_root/config-2087.toml" "$legacy_units")
 assert_eq "legacy service discovery excludes false matches" 1 "${#matched_legacy_units[@]}"
+
+cat > "$legacy_units/unsafe-hook.service" <<EOF
+[Service]
+ExecStart=/opt/backhaul/backhaul -c $legacy_root/config-2087.toml
+ExecStartPre=/bin/sh -c id
+EOF
+assert_failure "restore rejects executable systemd hooks" unit_file_safe_for_restore "$legacy_units/unsafe-hook.service" "$legacy_root/config-2087.toml"
+
+effective_mapping_override_rejected() (
+  systemctl() {
+    if [[ "${1:-}" == "show" ]]; then
+      printf '{ path=/opt/backhaul/backhaul ; argv[]=/opt/backhaul/backhaul -c /root/backhaul/other.toml ; }\n'
+      return 0
+    fi
+    return 1
+  }
+  service_uses_config_file backhaul-2087.service "$legacy_units/backhaul-2087.service" "$legacy_root/config-2087.toml"
+)
+effective_mapping_match_accepted() (
+  systemctl() {
+    if [[ "${1:-}" == "show" ]]; then
+      printf '{ path=/opt/backhaul/backhaul ; argv[]=/opt/backhaul/backhaul -c %s ; }\n' "$legacy_root/config-2087.toml"
+      return 0
+    fi
+    return 1
+  }
+  service_uses_config_file backhaul-2087.service "$legacy_units/backhaul-2087.service" "$legacy_root/config-2087.toml"
+)
+assert_failure "effective ExecStart override beats stale static unit" effective_mapping_override_rejected
+assert_success "effective ExecStart mapping is accepted" effective_mapping_match_accepted
+
+start_enable_failure_is_fatal() (
+  SERVICE_NAME="backhaul-test.service"
+  CONFIG_FILE="$parser_config"
+  systemctl() {
+    case "${1:-}" in
+      daemon-reload) return 0 ;;
+      enable) return 1 ;;
+      restart) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  verify_service_health() { return 0; }
+  start_and_verify_service >/dev/null 2>&1
+)
+service_action_enable_failure_is_fatal() (
+  SERVICE_FILE="$legacy_units/backhaul-2087.service"
+  SERVICE_NAME="backhaul-2087.service"
+  CONFIG_FILE="$legacy_root/config-2087.toml"
+  ACTIVE_PROFILE="default"
+  profile_service_uses_config_file() { return 0; }
+  systemctl() {
+    case "${1:-}" in
+      daemon-reload) return 0 ;;
+      enable) return 1 ;;
+      start) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  verify_service_health() { return 0; }
+  service_action start >/dev/null 2>&1
+)
+stop_failure_is_fatal() (
+  service_is_active_name() { return 0; }
+  systemctl() { [[ "${1:-}" != "stop" ]]; }
+  stop_service_verified backhaul-test.service >/dev/null 2>&1
+)
+assert_failure "start helper rejects enable failure" start_enable_failure_is_fatal
+assert_failure "service action rejects enable failure" service_action_enable_failure_is_fatal
+assert_failure "verified stop rejects systemd stop failure" stop_failure_is_fatal
+
+transaction_rollback_executes() (
+  local rollback_marker="no"
+  # ShellCheck cannot follow the rollback handler name passed to begin_transaction.
+  # shellcheck disable=SC2317
+  test_rollback_handler() { rollback_marker="yes"; }
+  TRANSACTION_ACTIVE=0
+  TRANSACTION_ROLLBACK_RUNNING=0
+  begin_transaction test_rollback_handler || return 1
+  rollback_active_transaction "regression test" >/dev/null 2>&1 || return 1
+  [[ "$rollback_marker" == "yes" && "$TRANSACTION_ACTIVE" -eq 0 ]]
+)
+assert_success "transaction rollback handler executes" transaction_rollback_executes
 
 power_config="$test_tmp/power.toml"
 sanitized_config="$test_tmp/musixal.toml"
@@ -249,6 +391,98 @@ assert_success "sanitized config passes Musixal schema" check_config_compatibili
 assert_eq "sanitizer disables unsafe Musixal web monitor" 0 "$(config_value_from_file "$sanitized_config" web_port)"
 assert_failure "sanitizer removes adaptive pool key" grep -q '^max_pool_size[[:space:]]*=' "$sanitized_config"
 assert_failure "sanitizer removes fork web auth key" grep -q '^web_username[[:space:]]*=' "$sanitized_config"
+
+# Older client configs sometimes carried the server-only heartbeat key. Both
+# Backhaul families ignore/omit it on ClientConfig, so explicit migration may
+# remove it without changing any effective client setting.
+legacy_client_config="$test_tmp/legacy-client-heartbeat.toml"
+power_legacy_sanitized="$test_tmp/power-legacy-client.toml"
+musixal_legacy_sanitized="$test_tmp/musixal-legacy-client.toml"
+cat > "$legacy_client_config" <<'EOF'
+[client]
+remote_addr = "127.0.0.1:8080"
+transport = "wsmux"
+token = "test-token"
+connection_pool = 8
+heartbeat = 40
+retry_interval = 3
+EOF
+assert_failure "legacy client heartbeat rejected by power schema" check_config_compatibility_file power0matin/Backhaul "$legacy_client_config"
+assert_failure "legacy client heartbeat rejected by Musixal schema" check_config_compatibility_file Musixal/Backhaul "$legacy_client_config"
+assert_success "legacy client heartbeat safely removed for power" sanitize_config_for_source power0matin/Backhaul "$legacy_client_config" "$power_legacy_sanitized"
+assert_success "adapted legacy client passes power schema" check_config_compatibility_file power0matin/Backhaul "$power_legacy_sanitized"
+assert_failure "power adaptation removes client heartbeat" grep -q '^heartbeat[[:space:]]*=' "$power_legacy_sanitized"
+assert_success "legacy client heartbeat safely removed for Musixal" sanitize_config_for_source Musixal/Backhaul "$legacy_client_config" "$musixal_legacy_sanitized"
+assert_success "adapted legacy client passes Musixal schema" check_config_compatibility_file Musixal/Backhaul "$musixal_legacy_sanitized"
+assert_failure "Musixal adaptation removes client heartbeat" grep -q '^heartbeat[[:space:]]*=' "$musixal_legacy_sanitized"
+
+# Backup integrity must be independent from migration compatibility. A
+# checksum-valid snapshot of a running legacy config has to remain restorable
+# even when the config contains an ignored, role-mismatched key.
+legacy_backup="$test_tmp/legacy-backup"
+mkdir -p "$legacy_backup/profiles/default"
+cp "$legacy_client_config" "$legacy_backup/profiles/default/config.toml"
+cat > "$legacy_backup/MANIFEST" <<'EOF'
+schema=1
+created=2026-08-07T00:00:00Z
+manager_version=3.0.2
+backhaul_version=v0.7.2
+source=Musixal/Backhaul
+active_profile=default
+EOF
+: > "$legacy_backup/services.state"
+backup_checksum_file "$legacy_backup"
+assert_success "legacy config backup passes integrity validation" validate_backup_tree "$legacy_backup"
+printf 'corruption\n' >> "$legacy_backup/profiles/default/config.toml"
+assert_failure "backup checksum corruption still rejected" validate_backup_tree "$legacy_backup"
+
+# Schema 2 snapshots must be self-contained for both managed profiles and
+# root-level legacy tunnels, including exact service/config ownership. Unknown
+# source provenance is restorable only when the exact managed unit is saved.
+schema2_backup="$test_tmp/schema2-backup"
+mkdir -p "$schema2_backup/profiles/default" "$schema2_backup/services" \
+  "$schema2_backup/legacy" "$schema2_backup/legacy-services" "$schema2_backup/legacy-tls"
+cat > "$schema2_backup/profiles/default/config.toml" <<'EOF'
+[server]
+bind_addr = "0.0.0.0:443"
+transport = "wsmux"
+token = "managed-token"
+ports = ["2052"]
+EOF
+cat > "$schema2_backup/legacy/config-2087.toml" <<'EOF'
+[server]
+bind_addr = "0.0.0.0:2087"
+transport = "wsmux"
+token = "legacy-token"
+ports = ["443"]
+EOF
+cat > "$schema2_backup/services/backhaul.service" <<'EOF'
+[Service]
+ExecStart=/opt/backhaul/backhaul -c /root/backhaul/config.toml
+EOF
+cat > "$schema2_backup/legacy-services/backhaul-2087.service" <<'EOF'
+[Service]
+ExecStart=/opt/backhaul/backhaul -c /root/backhaul/config-2087.toml
+EOF
+cat > "$schema2_backup/MANIFEST" <<'EOF'
+schema=2
+created=2026-08-07T00:00:00Z
+manager_version=3.1.0
+backhaul_version=v0.8.0
+source=unknown
+active_profile=default
+EOF
+printf '%s\n' 'backhaul.service yes yes' > "$schema2_backup/services.state"
+printf '%s\n' 'backhaul-2087.service yes yes config-2087.toml' > "$schema2_backup/legacy-services.state"
+printf '%s\n' 'test-backhaul-binary-placeholder' > "$schema2_backup/backhaul"
+backup_checksum_file "$schema2_backup"
+assert_success "schema2 backup validates managed and legacy tunnels" validate_backup_tree "$schema2_backup"
+cp "$schema2_backup/legacy-services/backhaul-2087.service" "$schema2_backup/legacy-services/backhaul-2087.service.good"
+sed -i 's|config-2087.toml|wrong.toml|' "$schema2_backup/legacy-services/backhaul-2087.service"
+backup_checksum_file "$schema2_backup"
+assert_failure "schema2 rejects legacy service/config mismatch" validate_backup_tree "$schema2_backup"
+mv "$schema2_backup/legacy-services/backhaul-2087.service.good" "$schema2_backup/legacy-services/backhaul-2087.service"
+backup_checksum_file "$schema2_backup"
 
 # Exercise the actual config writers against the release-specific schema
 # matrix, not only their individual validation helpers.
@@ -336,7 +570,7 @@ process_substitution_version=$(bash <(cat "${ROOT_DIR}/backhaul-manager.sh") --v
 assert_eq "process-substitution execution" "Backhaul Manager ${MANAGER_VERSION}" "$process_substitution_version"
 
 if (( skipped > 0 )); then
-  printf 'PASS: %d helper checks (%d skipped)\n' "$tests" "$skipped"
+  printf 'PASS: %d regression checks (%d skipped)\n' "$tests" "$skipped"
 else
-  printf 'PASS: %d helper tests\n' "$tests"
+  printf 'PASS: %d regression checks\n' "$tests"
 fi

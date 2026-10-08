@@ -2,6 +2,18 @@
 
 # Backhaul Manager
 
+<!-- repo-badges:start -->
+<p align="center">
+  <a href="https://hits.sh/github.com/power0matin/backhaul-manager/"><img src="https://hits.sh/github.com/power0matin/backhaul-manager.svg?style=flat-square&amp;label=Views&amp;labelColor=18181B&amp;color=0EA5E9&amp;logo=github" alt="Repository Views"/></a>
+  <a href="https://github.com/power0matin/backhaul-manager/stargazers"><img src="https://img.shields.io/github/stars/power0matin/backhaul-manager?style=flat-square&amp;label=Stars&amp;labelColor=18181B&amp;color=F59E0B&amp;logo=github&amp;logoColor=white" alt="GitHub Stars"/></a>
+  <a href="https://github.com/power0matin/backhaul-manager/forks"><img src="https://img.shields.io/github/forks/power0matin/backhaul-manager?style=flat-square&amp;label=Forks&amp;labelColor=18181B&amp;color=6366F1&amp;logo=github&amp;logoColor=white" alt="GitHub Forks"/></a>
+  <a href="https://github.com/power0matin/backhaul-manager/issues"><img src="https://img.shields.io/github/issues/power0matin/backhaul-manager?style=flat-square&amp;label=Issues&amp;labelColor=18181B&amp;color=22C55E&amp;logo=github&amp;logoColor=white" alt="GitHub Issues"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/power0matin/backhaul-manager?style=flat-square&amp;label=License&amp;labelColor=18181B&amp;color=EF4444&amp;logo=github&amp;logoColor=white" alt="GitHub License"/></a>
+</p>
+<!-- repo-badges:end -->
+
+> **Official project page:** [matinshahabadi.ir/projects/backhaul-manager/](https://matinshahabadi.ir/projects/backhaul-manager/)
+
 **Safe, interactive installer and operations manager for [power0matin/Backhaul](https://github.com/power0matin/Backhaul) and [Musixal/Backhaul](https://github.com/Musixal/Backhaul)**
 
 One script for both the Iran-side server and the foreign client, with profiles, source migration, verified backups, health metrics, rollback, and service management built in.
@@ -33,10 +45,10 @@ Backhaul Manager is designed for reverse-tunnel deployments used with Xray, V2Ra
 | 🔐 **Safer secrets** | Generates a 48-character cryptographic token, hides token input, escapes TOML values, stores secrets as `0600`, and keeps the token out of run logs |
 | 🛡️ **Transactional changes** | Backs up config/unit/binary state, writes files atomically, verifies the service, and rolls back after a failed install/reconfigure |
 | ⬆️ **Safe multi-profile upgrades** | Downloads the correct architecture, validates it, snapshots the full installation, verifies every previously-running profile, and rolls everything back on failure |
-| 💾 **Backup + host migration** | Full checksummed backups, hardened portable import/export, and guided SSH migration include all profiles, service state, binary, source state, and readable TLS material |
-| 🩺 **Health + metrics** | Status, diagnostics, systemd resource/restart metrics, protected PowerMatin `/stats`, recent logs, and live logs are built in |
+| 💾 **Backup + host migration** | Schema-2 checksummed backups, hardened portable import/export, and guided SSH migration include managed profiles, detected legacy tunnels, service state, binary/source state, and readable TLS material |
+| 🩺 **Health + metrics** | Status and diagnostics verify the current service PID and real tunnel state (listener/control channel), alongside systemd metrics, protected PowerMatin `/stats`, and logs |
+| 🔒 **Single-writer operations** | Mutating/interactive Manager runs use `flock` so two sessions cannot concurrently rewrite shared config, binary, backup, or systemd state |
 | 🛠️ **Global manager command** | Installs/updates a validated `backhaul-manager` command in `/usr/local/sbin` with downgrade protection |
-| 🧹 **Targeted conflict cleanup** | Detects likely tunnel services and only allows selecting detected candidates, with a confirmation before disabling them |
 | 🔥 **Firewall aware** | Detects active `ufw`/`firewalld` and prints the ports to allow; it never changes firewall policy itself |
 | 🌐 **IPv4/IPv6/hostnames** | Client endpoints accept IPv4, IPv6, or DNS names; WebSocket transports can optionally use an edge/CDN host |
 | 🧯 **Safer uninstall** | Removes the service/binary first and asks separately before permanently deleting config, credentials, and backups |
@@ -48,7 +60,7 @@ Backhaul Manager is designed for reverse-tunnel deployments used with Xray, V2Ra
 - Bash 5+
 - `x86_64`/AMD64 or `arm64`/AArch64
 - Root access for install and service operations
-- `curl`, `tar`, `systemctl`, `journalctl`, `ss`, `awk`, `grep`, `sed`, and standard GNU/coreutils tools
+- `curl`, `tar`, `flock`, `systemctl`, `journalctl`, `ss`, `awk`, `grep`, `sed`, and standard GNU/coreutils tools
 - `nc`/netcat is optional and is only used for client reachability probes
 - `ssh` and `scp` are optional and only required for guided server-to-server migration; custom SSH ports/keys should be configured in `~/.ssh/config`
 - `jq` is optional and prettifies PowerMatin `/stats` output when available
@@ -142,12 +154,12 @@ Advanced mode also exposes only options known to exist in the selected release f
 - Existing root-level Backhaul configs such as `/root/backhaul/config-2087.toml` are auto-detected and listed as **legacy tunnels** instead of being silently omitted. Unrelated TOML files and timestamped `.bak.*` files are ignored.
 - Legacy discovery is read-only. Use **Profiles → Adopt legacy tunnel** to explicitly convert a detected config into a native named profile; the Manager preserves a detected service's active/enabled state and rolls back if the replacement cannot be verified. If no service references the file, the original is retained and the adopted profile stays stopped until you start it.
 - `*` means the profile currently selected for Manager actions, not the only running tunnel. Every managed profile reports its own `active`, `stopped`, `no-unit`, or `mismatch` service state.
-- Service actions refuse `mismatch` rows, and shared binary/source upgrade, migration, and uninstall operations refuse to proceed while a detected legacy tunnel is still active outside profile management. This prevents Manager operations from silently restarting or replacing the wrong tunnel.
+- Service actions refuse `mismatch` rows. Shared binary/source upgrade, migration, restore, and uninstall operations refuse to proceed while **any** detected legacy tunnel remains outside profile management, even if it is currently stopped. This prevents an unmanaged config from being silently left behind on another binary/source.
 - Create, select, clone, and delete named profiles from the Profiles menu. TLS clones copy their certificate/key into the new profile so they do not depend on the original profile.
-- A full backup captures every configured profile, service enable/active state, the shared binary/source, and readable TLS files. `CHECKSUMS` validates accidental corruption.
+- A full schema-2 backup captures every managed profile **and detected root-level legacy tunnel**, service enable/active state, the shared binary/source, restorable unit state, and readable TLS files. It fails closed if required TLS/unit material cannot be captured. Every snapshot is checksum-verified before success is reported.
 - Portable `.tar.gz` import rejects traversal paths, links/devices, excessive member counts, oversized compressed members, and excessive expanded data before root extraction. Bundles contain secrets and are not authenticated/signed, so import only bundles you trust.
 - Server-to-server migration exports the same bundle, sends it over SSH, forces the remote copy to mode `0600`, and can run a verified restore remotely.
-- Source migration checks all profiles before changing the shared binary. Moving PowerMatin → Musixal can explicitly remove only known fork-specific keys; unsafe Musixal web metrics are disabled during adaptation. Downgrades always require interactive confirmation.
+- Source migration checks all profiles before changing the shared binary. Explicit adaptation can remove only known-safe fork-specific or role-mismatched legacy keys (for example a server-only `heartbeat` left in an old client config); unsafe Musixal web metrics are disabled during adaptation. All profile rewrites are staged before commit, and downgrades always require interactive confirmation.
 
 ## Direct CLI Operations
 
@@ -163,6 +175,7 @@ sudo ./backhaul-manager.sh --start
 sudo ./backhaul-manager.sh --stop
 sudo ./backhaul-manager.sh --upgrade
 sudo ./backhaul-manager.sh --migrate-source Musixal/Backhaul
+sudo ./backhaul-manager.sh --set-source power0matin/Backhaul
 sudo ./backhaul-manager.sh --compat power0matin/Backhaul
 sudo ./backhaul-manager.sh --list-profiles
 sudo ./backhaul-manager.sh --select-profile edge-1
@@ -178,7 +191,7 @@ sudo ./backhaul-manager.sh --follow-logs
 ./backhaul-manager.sh --help
 ```
 
-`--upgrade` defaults to the latest release from the selected Backhaul source. A pinned release tag can be supplied. Non-interactive `--migrate-source` deliberately refuses downgrades and configs that require adaptation; use the interactive migration flow when you want to explicitly approve either operation. Legacy Manager installs without source state are treated as Musixal installations.
+`--upgrade` defaults to the latest release from the recorded Backhaul source and refuses a downgrade non-interactively. A pinned release tag can be supplied. Non-interactive `--migrate-source` deliberately refuses downgrades and configs that require adaptation; use the interactive flow when you explicitly want either operation. If an existing binary has no source metadata, the Manager reports its source as `unknown` instead of guessing Musixal; record the repository that actually supplied it with **Backhaul maintenance → Record current source** or `--set-source REPO` before source-dependent maintenance.
 
 ## Files and Backups
 
@@ -206,10 +219,12 @@ The web monitor is disabled in Standard mode (`web_port = 0`). PowerMatin Advanc
 - The token is shown only on the terminal and in the root-only info/config files; it is not printed into the manager run log.
 - Release downloads use HTTPS, validate the gzip/tar structure, extract only the expected `backhaul` member, execute its `-v` sanity check, and verify pinned-version matches.
 - Binary replacement and config writes use temporary files plus `mv` instead of partially overwriting live files.
-- A failed configure/start restores the previous config, systemd unit, binary, service state, and enablement state where applicable.
-- Full upgrade/source migration snapshots all profiles and verifies all services that were active before the operation before declaring success.
-- Portable restore validates a checksummed backup tree and regenerates trusted systemd unit templates instead of trusting unit files from the archive.
+- Mutating Manager runs hold a non-blocking `flock`; a second writer exits before touching shared state.
+- A failed configure/start restores the previous config, systemd unit, binary, service state, and enablement state where applicable; active transactions also attempt rollback on `SIGINT`/`SIGTERM`.
+- Full upgrade/source migration snapshots all managed state, stages the candidate binary/configs first, stops active services once for cutover, and verifies the current service PID/tunnel health before declaring success.
+- Portable restore validates a checksummed backup tree and rejects saved units whose command/config ownership or executable hooks are unsafe before installing them.
 - Import limits archive type, path, member count, individual size, compressed size, and total expanded size before extraction as root.
+- Effective systemd `ExecStart` (including drop-in overrides) takes precedence over the static unit file, and service ownership also requires the Backhaul binary itself—not just a matching `-c` path.
 - Manager self-update downloads only the repository's HTTPS `main` script, caps its size, validates Bash syntax and a single semantic Manager version declaration, and refuses downgrades. It is not a cryptographically signed update channel.
 - Uninstall preserves config/backups unless a second purge confirmation is explicitly accepted.
 - Firewall rules are never modified automatically.
@@ -270,7 +285,7 @@ shellcheck backhaul-manager.sh tests/test.sh
 bash tests/test.sh
 ```
 
-GitHub Actions runs the same syntax, ShellCheck, and helper-test checks for pushes and pull requests.
+GitHub Actions runs the same syntax, ShellCheck, regression, and failure-injection checks for pushes and pull requests.
 
 ## Roadmap
 
@@ -279,7 +294,7 @@ GitHub Actions runs the same syntax, ShellCheck, and helper-test checks for push
 - [x] Transactional config/binary changes with rollback
 - [x] Status, diagnostics, logs, service control, and upgrade commands
 - [x] CLI maintenance operations
-- [x] Automated syntax/lint/helper tests
+- [x] Automated syntax/lint/regression and failure-injection tests
 - [x] First-class advanced port ranges and mapping rules
 - [x] Standard/advanced configuration with resource-aware tuning
 - [x] Multiple named tunnel profiles/services
