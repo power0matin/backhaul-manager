@@ -21,26 +21,26 @@ Backhaul Manager برای تانل معکوس در کنار Xray، V2Ray، Marzb
 
 ## امکانات
 
-| قابلیت | توضیح |
-| --- | --- |
-| 🔁 **هر دو سمت با یک اسکریپت** | همان فایل هم سرور ایران و هم کلاینت خارج را تنظیم می‌کند |
-| 📦 **انتخاب منبع Backhaul** | هنگام setup با شماره بین `power0matin/Backhaul` (پیشنهادی) و upstream رسمی `Musixal/Backhaul` انتخاب می‌کنید |
-| 🔄 **مهاجرت بین sourceها** | همه Profileها را با compatibility check، جلوگیری از downgrade ناخواسته، backup، verify و rollback بین PowerMatin و Musixal مهاجرت می‌دهد |
-| 🚚 **تمام transportهای رسمی** | `tcp`، `tcpmux`، `udp`، `ws`، `wss`، `wsmux` و `wssmux`؛ انتخاب پیشنهادی همچنان `wsmux` است |
-| 🎛️ **Standard و Advanced** | Advanced شامل port range/mapping، Auto tuning، PROXY protocol، UDP روی TCP و optionهای مخصوص هر fork است |
-| 🧩 **Profileهای نام‌گذاری‌شده** | چند config/service مستقل مثل `backhaul-edge-1.service` را با یک binary/source مشترک اجرا می‌کند |
-| ✅ **اعتبارسنجی ورودی‌ها** | پورت، نسخه، IP/hostname، transport و فایل‌های لازم قبل از هر تغییری بررسی می‌شوند |
-| 🔐 **مدیریت امن‌تر secret** | token امن ۴۸ کاراکتری تولید می‌شود، ورودی token روی صفحه echo نمی‌شود، مقادیر TOML escape می‌شوند و token وارد run log نمی‌شود |
-| 🛡️ **تغییرات تراکنشی** | قبل از تغییر از config/unit/binary بکاپ گرفته می‌شود؛ فایل‌ها atomic جایگزین می‌شوند و در صورت fail شدن سرویس rollback انجام می‌شود |
-| ⬆️ **آپدیت امن چند-Profile** | کل نصب قبل از Upgrade snapshot می‌شود، تمام Profileهای قبلاً فعال verify می‌شوند و در صورت خطا کل وضعیت rollback می‌شود |
-| 💾 **Backup و مهاجرت سرور** | Full Backup schema-2، import/export امن و مهاجرت SSH شامل Profileهای managed، legacy tunnelهای شناسایی‌شده، service state، binary/source و TLS است |
-| 🩺 **Health و Metrics** | Status و Diagnostics علاوه بر systemd، PID فعلی و سلامت واقعی tunnel (listener/control channel)، restart counter، `/stats` امن PowerMatin و log را بررسی می‌کنند |
-| 🔒 **عملیات تک‌نویسنده** | اجرای تعاملی/تغییردهنده با `flock` قفل می‌شود تا دو session هم‌زمان config، binary، backup یا systemd state مشترک را تغییر ندهند |
-| 🛠️ **دستور سراسری Manager** | Manager را با downgrade guard به‌صورت `backhaul-manager` در `/usr/local/sbin` نصب/آپدیت می‌کند |
-| 🔥 **آگاه از فایروال** | `ufw` و `firewalld` را تشخیص می‌دهد و دستور لازم را نشان می‌دهد؛ خودش قانون فایروال را تغییر نمی‌دهد |
-| 🌐 **IPv4 / IPv6 / hostname** | آدرس سرور ایران می‌تواند IPv4، IPv6 یا hostname باشد؛ transportهای WebSocket از edge/CDN اختیاری هم پشتیبانی می‌کنند |
-| 🧯 **Uninstall امن‌تر** | ابتدا سرویس و binary حذف می‌شوند؛ حذف دائمی config، credential و backup تأیید جداگانه می‌خواهد |
-| 🤖 **دستورات CLI** | کارهای مدیریتی رایج بدون باز کردن منوی تعاملی هم قابل اجرا هستند |
+| قابلیت                          | توضیح                                                                                                                                                            |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🔁 **هر دو سمت با یک اسکریپت**  | همان فایل هم سرور ایران و هم کلاینت خارج را تنظیم می‌کند                                                                                                         |
+| 📦 **انتخاب منبع Backhaul**     | هنگام setup با شماره بین `power0matin/Backhaul` (پیشنهادی) و upstream رسمی `Musixal/Backhaul` انتخاب می‌کنید                                                     |
+| 🔄 **مهاجرت بین sourceها**      | همه Profileها را با compatibility check، جلوگیری از downgrade ناخواسته، backup، verify و rollback بین PowerMatin و Musixal مهاجرت می‌دهد                         |
+| 🚚 **تمام transportهای رسمی**   | `tcp`، `tcpmux`، `udp`، `ws`، `wss`، `wsmux` و `wssmux`؛ انتخاب پیشنهادی همچنان `wsmux` است                                                                      |
+| 🎛️ **Standard و Advanced**      | Advanced شامل port range/mapping، Auto tuning، PROXY protocol، UDP روی TCP و optionهای مخصوص هر fork است                                                         |
+| 🧩 **Profileهای نام‌گذاری‌شده** | چند config/service مستقل مثل `backhaul-edge-1.service` را با یک binary/source مشترک اجرا می‌کند                                                                  |
+| ✅ **اعتبارسنجی ورودی‌ها**      | پورت، نسخه، IP/hostname، transport و فایل‌های لازم قبل از هر تغییری بررسی می‌شوند                                                                                |
+| 🔐 **مدیریت امن‌تر secret**     | token امن ۴۸ کاراکتری تولید می‌شود، ورودی token روی صفحه echo نمی‌شود، مقادیر TOML escape می‌شوند و token وارد run log نمی‌شود                                   |
+| 🛡️ **تغییرات تراکنشی**          | قبل از تغییر از config/unit/binary بکاپ گرفته می‌شود؛ فایل‌ها atomic جایگزین می‌شوند و در صورت fail شدن سرویس rollback انجام می‌شود                              |
+| ⬆️ **آپدیت امن چند-Profile**    | کل نصب قبل از Upgrade snapshot می‌شود، تمام Profileهای قبلاً فعال verify می‌شوند و در صورت خطا کل وضعیت rollback می‌شود                                          |
+| 💾 **Backup و مهاجرت سرور**     | Full Backup schema-2، import/export امن و مهاجرت SSH شامل Profileهای managed، legacy tunnelهای شناسایی‌شده، service state، binary/source و TLS است               |
+| 🩺 **Health و Metrics**         | Status و Diagnostics علاوه بر systemd، PID فعلی و سلامت واقعی tunnel (listener/control channel)، restart counter، `/stats` امن PowerMatin و log را بررسی می‌کنند |
+| 🔒 **عملیات تک‌نویسنده**        | اجرای تعاملی/تغییردهنده با `flock` قفل می‌شود تا دو session هم‌زمان config، binary، backup یا systemd state مشترک را تغییر ندهند                                 |
+| 🛠️ **دستور سراسری Manager**     | Manager را با downgrade guard به‌صورت `backhaul-manager` در `/usr/local/sbin` نصب/آپدیت می‌کند                                                                   |
+| 🔥 **آگاه از فایروال**          | `ufw` و `firewalld` را تشخیص می‌دهد و دستور لازم را نشان می‌دهد؛ خودش قانون فایروال را تغییر نمی‌دهد                                                             |
+| 🌐 **IPv4 / IPv6 / hostname**   | آدرس سرور ایران می‌تواند IPv4، IPv6 یا hostname باشد؛ transportهای WebSocket از edge/CDN اختیاری هم پشتیبانی می‌کنند                                             |
+| 🧯 **Uninstall امن‌تر**         | ابتدا سرویس و binary حذف می‌شوند؛ حذف دائمی config، credential و backup تأیید جداگانه می‌خواهد                                                                   |
+| 🤖 **دستورات CLI**              | کارهای مدیریتی رایج بدون باز کردن منوی تعاملی هم قابل اجرا هستند                                                                                                 |
 
 ## پیش‌نیازها
 
@@ -115,15 +115,15 @@ Source [1]:
 
 گزینه‌ها با transport typeهای فعلی خود Backhaul هماهنگ هستند:
 
-| Transport | کاربرد | ورودی اضافه در سمت سرور |
-| --- | --- | --- |
-| `wsmux` | WebSocket multiplex شده؛ انتخاب عمومی پیشنهادی | ندارد |
-| `tcpmux` | TCP multiplex شده | ندارد |
-| `tcp` | TCP ساده | ندارد |
-| `ws` | WebSocket | ندارد |
-| `wssmux` | WebSocket multiplex شده با TLS | certificate + private key |
-| `wss` | WebSocket با TLS | certificate + private key |
-| `udp` | UDP transport | ندارد |
+| Transport | کاربرد                                         | ورودی اضافه در سمت سرور   |
+| --------- | ---------------------------------------------- | ------------------------- |
+| `wsmux`   | WebSocket multiplex شده؛ انتخاب عمومی پیشنهادی | ندارد                     |
+| `tcpmux`  | TCP multiplex شده                              | ندارد                     |
+| `tcp`     | TCP ساده                                       | ندارد                     |
+| `ws`      | WebSocket                                      | ندارد                     |
+| `wssmux`  | WebSocket multiplex شده با TLS                 | certificate + private key |
+| `wss`     | WebSocket با TLS                               | certificate + private key |
+| `udp`     | UDP transport                                  | ندارد                     |
 
 در Standard Mode لیست مستقیم پورت‌ها مثل `443,2052,2082` گرفته می‌شود. Advanced Mode از ruleهایی مثل `4000-4100`، `4000=5000`، `443=127.0.0.1:8443` و mapping به IPv6 براکت‌دار پشتیبانی می‌کند و برخورد با control port را بررسی می‌کند.
 
@@ -183,19 +183,19 @@ sudo ./backhaul-manager.sh --follow-logs
 
 ## فایل‌ها و بکاپ‌ها
 
-| مسیر | کاربرد |
-| --- | --- |
-| `/opt/backhaul/backhaul` | binary نصب‌شده Backhaul |
-| `/root/backhaul/config.toml` | کانفیگ فعال با permission برابر `0600` |
-| `/root/backhaul/backhaul-info.txt` | خلاصه اطلاعات اتصال و setup با `0600` |
-| `/root/backhaul/profiles/<name>/config.toml` | config مربوط به Profile نام‌دار با `0600` |
-| `/etc/systemd/system/backhaul.service` | سرویس systemd |
-| `/etc/systemd/system/backhaul-<name>.service` | سرویس systemd مربوط به Profile نام‌دار |
-| `/var/lib/backhaul-manager/backups/` | snapshotهای زمان‌دار برای rollback |
-| `/var/lib/backhaul-manager/backhaul-source` | repository انتخاب‌شده برای releaseهای Backhaul |
-| `/var/lib/backhaul-manager/active-profile` | Profile انتخاب‌شده فعلی |
-| `/var/log/backhaul-manager/` | run logهای Manager با `0600` |
-| `/usr/local/sbin/backhaul-manager` | دستور سراسری اختیاری Manager |
+| مسیر                                          | کاربرد                                         |
+| --------------------------------------------- | ---------------------------------------------- |
+| `/opt/backhaul/backhaul`                      | binary نصب‌شده Backhaul                        |
+| `/root/backhaul/config.toml`                  | کانفیگ فعال با permission برابر `0600`         |
+| `/root/backhaul/backhaul-info.txt`            | خلاصه اطلاعات اتصال و setup با `0600`          |
+| `/root/backhaul/profiles/<name>/config.toml`  | config مربوط به Profile نام‌دار با `0600`      |
+| `/etc/systemd/system/backhaul.service`        | سرویس systemd                                  |
+| `/etc/systemd/system/backhaul-<name>.service` | سرویس systemd مربوط به Profile نام‌دار         |
+| `/var/lib/backhaul-manager/backups/`          | snapshotهای زمان‌دار برای rollback             |
+| `/var/lib/backhaul-manager/backhaul-source`   | repository انتخاب‌شده برای releaseهای Backhaul |
+| `/var/lib/backhaul-manager/active-profile`    | Profile انتخاب‌شده فعلی                        |
+| `/var/log/backhaul-manager/`                  | run logهای Manager با `0600`                   |
+| `/usr/local/sbin/backhaul-manager`            | دستور سراسری اختیاری Manager                   |
 
 Web monitor در Standard Mode خاموش است (`web_port = 0`). در Advanced Mode نسخه PowerMatin می‌تواند آن را به‌صورت loopback-only و با authentication فعال کند.
 
@@ -219,20 +219,20 @@ Web monitor در Standard Mode خاموش است (`web_port = 0`). در Advanced
 
 ## پیش‌فرض‌های کانفیگ
 
-| تنظیم | پیش‌فرض |
-| --- | --- |
-| Control port | `8080` |
-| Tunnel ports | `2052,2082,8002,443` |
-| Transport | `wsmux` |
-| منبع Backhaul | `power0matin/Backhaul` (پیشنهادی) |
-| `keepalive_period` | `20` برای transportهای غیر UDP |
-| `heartbeat` سمت سرور | `20` |
-| `channel_size` | `2048` |
-| `connection_pool` | `8` |
-| `mux_con` | `8` برای mux سمت سرور |
-| `mux_version` | `1` برای mux |
-| `web_port` | `0` (خاموش) |
-| `log_level` | `info` |
+| تنظیم                | پیش‌فرض                           |
+| -------------------- | --------------------------------- |
+| Control port         | `8080`                            |
+| Tunnel ports         | `2052,2082,8002,443`              |
+| Transport            | `wsmux`                           |
+| منبع Backhaul        | `power0matin/Backhaul` (پیشنهادی) |
+| `keepalive_period`   | `20` برای transportهای غیر UDP    |
+| `heartbeat` سمت سرور | `20`                              |
+| `channel_size`       | `2048`                            |
+| `connection_pool`    | `8`                               |
+| `mux_con`            | `8` برای mux سمت سرور             |
+| `mux_version`        | `1` برای mux                      |
+| `web_port`           | `0` (خاموش)                       |
+| `log_level`          | `info`                            |
 
 در Advanced Mode مقادیر channel/pool/mux بر اساس tuning profile تغییر می‌کنند: `safe` برای مصرف کمتر منابع، `balanced` مطابق defaultهای بالا و `throughput` برای hostهای قوی‌تر و concurrency بیشتر است.
 
