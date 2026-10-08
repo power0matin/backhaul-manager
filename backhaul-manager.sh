@@ -117,7 +117,7 @@ rollback_active_transaction() {
   rollback_func="$TRANSACTION_ROLLBACK_FUNC"
   TRANSACTION_ACTIVE=0
   TRANSACTION_ROLLBACK_RUNNING=1
-  trap '' INT TERM
+  trap '' INT TERM HUP
   warn "Rolling back the active operation after ${reason}..."
   if "$rollback_func" "${TRANSACTION_ROLLBACK_ARGS[@]}"; then
     :
@@ -130,11 +130,18 @@ rollback_active_transaction() {
   TRANSACTION_ROLLBACK_ARGS=()
   trap on_interrupt INT
   trap on_terminate TERM
+  trap on_hangup HUP
   return "$rc"
+}
+
+on_hangup() {
+  rollback_active_transaction "hangup" || true
+  exit 129
 }
 
 trap on_interrupt INT
 trap on_terminate TERM
+trap on_hangup HUP
 
 usage() {
   cat <<EOF
@@ -234,20 +241,59 @@ operation_requires_lock() {
   esac
 }
 
+lock_holder_pids() {
+  local fd_path pid
+  for fd_path in /proc/[0-9]*/fd/*; do
+    [[ "$(readlink "$fd_path" 2>/dev/null)" == "$OPERATION_LOCK_FILE" ]] || continue
+    pid="${fd_path#/proc/}"
+    pid="${pid%%/*}"
+    [[ "$pid" != "$$" ]] && printf '%s\n' "$pid"
+  done
+}
+
+lock_has_live_manager() {
+  local pid comm
+  while IFS= read -r pid; do
+    comm=$(cat "/proc/${pid}/comm" 2>/dev/null) || continue
+    [[ "$comm" == "bash" ]] && return 0
+  done < <(lock_holder_pids)
+  return 1
+}
+
+open_operation_lock() {
+  { exec 9>>"$OPERATION_LOCK_FILE"; } 2>/dev/null || return 2
+  flock -n 9
+}
+
 acquire_operation_lock() {
+  local pid comm rc=0
   (( OPERATION_LOCK_HELD == 0 )) || return 0
   if ! install -d -m 0755 "$(dirname "$OPERATION_LOCK_FILE")"; then
     err "Could not prepare the Manager lock directory."
     return 1
   fi
-  if ! { exec 9>"$OPERATION_LOCK_FILE"; }; then
+  open_operation_lock || rc=$?
+  if (( rc == 2 )); then
     err "Could not open the Manager operation lock."
     return 1
   fi
-  if ! flock -n 9; then
-    err "Another Backhaul Manager operation is already running."
-    info "Finish or exit the other Manager session before making changes."
-    return 1
+  if (( rc != 0 )); then
+    exec 9>&-
+    if lock_has_live_manager; then
+      err "Another Backhaul Manager operation is already running."
+      while IFS= read -r pid; do
+        comm=$(cat "/proc/${pid}/comm" 2>/dev/null || printf '?')
+        info "Lock holder: PID ${pid} (${comm})"
+      done < <(lock_holder_pids)
+      info "Finish or exit the other Manager session before making changes."
+      return 1
+    fi
+    warn "Recovering a stale Manager lock left behind by an ended session."
+    rm -f -- "$OPERATION_LOCK_FILE"
+    if ! open_operation_lock; then
+      err "Could not acquire the Manager operation lock."
+      return 1
+    fi
   fi
   OPERATION_LOCK_HELD=1
 }
@@ -257,7 +303,7 @@ setup_logging() {
   LOG_FILE="${LOG_DIR}/run-$(date +%Y%m%d-%H%M%S)-$$.log"
   : > "$LOG_FILE" || return 1
   chmod 0600 "$LOG_FILE" || return 1
-  exec > >(tee -a "$LOG_FILE") 2>&1
+  exec > >(tee -a "$LOG_FILE" 9>&-) 2>&1
 }
 
 ensure_directories() {
@@ -5175,7 +5221,7 @@ link_test_listen() {
     cfg="${LINK_TEST_DIR}/server-${t}.toml"
     log="${LINK_TEST_DIR}/server-${t}.log"
     link_test_write_server_config "$cfg" "$t" "$ctrl" "$token" "$fwd" "$echo_port"
-    "$LINK_TEST_BIN" -c "$cfg" > "$log" 2>&1 < /dev/null &
+    "$LINK_TEST_BIN" -c "$cfg" > "$log" 2>&1 < /dev/null 9>&- &
     LINK_TEST_PIDS+=("$!")
     server_pids+=("$!")
     tcp_ports+=("$ctrl")
@@ -5183,7 +5229,7 @@ link_test_listen() {
   done
 
   link_test_write_beacon "${LINK_TEST_DIR}/beacon.py"
-  LT_TOKEN="$token" python3 "${LINK_TEST_DIR}/beacon.py" $((base + LINK_TEST_BEACON_OFFSET)) > /dev/null 2>&1 < /dev/null &
+  LT_TOKEN="$token" python3 "${LINK_TEST_DIR}/beacon.py" $((base + LINK_TEST_BEACON_OFFSET)) > /dev/null 2>&1 < /dev/null 9>&- &
   beacon_pid=$!
   LINK_TEST_PIDS+=("$beacon_pid")
   tcp_ports+=($((base + LINK_TEST_BEACON_OFFSET)))
@@ -5383,7 +5429,7 @@ link_test_probe_run() {
   tmp="${LINK_TEST_DIR}/reach"; install -d -m 0700 "$tmp"
   for (( i = 0; i < count; i++ )); do
     t="${LINK_TEST_TRANSPORTS[$i]}"
-    ( if link_test_tcp_reachable "$host" $((base + i)); then : > "${tmp}/${t}.yes"; fi ) &
+    ( if link_test_tcp_reachable "$host" $((base + i)); then : > "${tmp}/${t}.yes"; fi ) 9>&- &
     reach_pids+=("$!")
   done
   wait "${reach_pids[@]}" 2>/dev/null || true
@@ -5397,7 +5443,7 @@ link_test_probe_run() {
   done
 
   link_test_write_responder "${LINK_TEST_DIR}/responder.py"
-  python3 "${LINK_TEST_DIR}/responder.py" "$echo_port" > /dev/null 2>&1 < /dev/null &
+  python3 "${LINK_TEST_DIR}/responder.py" "$echo_port" > /dev/null 2>&1 < /dev/null 9>&- &
   responder_pid=$!
   LINK_TEST_PIDS+=("$responder_pid")
   sleep 1
@@ -5414,7 +5460,7 @@ link_test_probe_run() {
     log="${LINK_TEST_DIR}/client-${t}.log"
     remote=$(format_host_port "$host" "$ctrl")
     link_test_write_client_config "$cfg" "$t" "$remote" "$token"
-    "$LINK_TEST_BIN" -c "$cfg" > "$log" 2>&1 < /dev/null &
+    "$LINK_TEST_BIN" -c "$cfg" > "$log" 2>&1 < /dev/null 9>&- &
     LT_PID[$t]="$!"
     LINK_TEST_PIDS+=("$!")
   done
