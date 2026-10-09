@@ -9,6 +9,9 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Added
 
+- Link test exact-port mode (Iran option 3, foreign option 2 with the new `x-...` code): tests one intended control port and transport with a temporary Backhaul listener, a separate forwarding port and an optional verification port, with every port and protocol listed explicitly. Stages (control reachability, pairing, handshake, forwarding, data round trip, stability) are reported separately, including pairing mismatch vs unreachable verification endpoint, TLS failures, WebSocket upgrade rejection and unsupported transports. A busy port is reported and never touched.
+- Link test option 4: TCP reachability only, labelled as not verifying Backhaul.
+- `tests/test-linktest.sh` (CI) and `tests/test-linktest-integration.sh` (optional, real binaries, loopback only).
 - Manager v3.1.0 operation lock (`flock`) so concurrent interactive/CLI writers cannot mutate the shared Backhaul state at the same time.
 - Explicit current-source recording (`--set-source` and **Backhaul maintenance → Record current source**) for installations whose existing binary provenance is not recorded.
 - PID-aware tunnel health verification: server health requires the configured listener to belong to the current service PID, while client health tracks the live peer/control-channel state instead of accepting `systemctl active` alone.
@@ -60,6 +63,9 @@ All notable changes to **Backhaul Manager** are documented in this file.
 
 ### Fixed
 
+- Link test (menu 13): a blocked automatically chosen port block no longer produces a categorical `NO-GO`. When no handshake or data stage could actually run, the verdict is `INCONCLUSIVE` and states that the intended production port was not tested. `NO-GO` is limited to a tested failure and is scoped to the tested ports.
+- Link test: clients that exit early (unsupported transport, rejected configuration) are classified as local setup results instead of "the path is actively filtering these protocols".
+- Link test: ports below 1024 are accepted wherever the process may bind them; the 1024 minimum is gone.
 - Health checks, preflight, diagnostics and firewall hints now treat the control port of every transport, including `udp`, as TCP; previously a healthy `udp` server was rolled back because a UDP listener was expected on the control port.
 - Stop/disable/daemon-reload failures can no longer be masked by Bash conditional `errexit` semantics during configure, service actions, profile deletion, uninstall, backup restore, upgrade, or source migration.
 - Interrupting an active transactional operation with `SIGINT`/`SIGTERM` now invokes its rollback handler; legacy adoption commits before archiving the old config so rollback can never reference a path already moved away.

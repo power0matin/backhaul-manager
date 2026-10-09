@@ -1,0 +1,16 @@
+fix(link-test): test the intended port and stop false NO-GO verdicts
+
+The link test only probed a random 20000-39999 block of 7 control, 7
+forwarding and 1 beacon port. When that block was filtered it printed a
+categorical NO-GO even though the real control port was reachable
+(reproduced with a live server on port 443).
+
+- add exact-port mode: one control port and transport, ports 1-65535,
+  separate forwarding and optional verification ports, explicit TCP/UDP
+- never touch a busy port; add a labelled TCP-reachability-only check
+- link-test-only handshake detector and failure classification (TLS,
+  WS upgrade rejection, unsupported transport, config, refused/timeout)
+- discovery verdict is INCONCLUSIVE unless a handshake/data stage ran;
+  NO-GO is scoped to the tested ports; transport ordering is unchanged
+- add tests/test-linktest.sh (CI) and optional real-binary integration
+

@@ -5001,16 +5001,18 @@ readonly LINK_TEST_TRANSPORTS=(wsmux tcpmux wssmux ws tcp wss udp)
 readonly LINK_TEST_FWD_OFFSET=10
 readonly LINK_TEST_ECHO_OFFSET=20
 readonly LINK_TEST_BEACON_OFFSET=21
-readonly LINK_TEST_SOAK_SECONDS=8
+[[ "${LINK_TEST_SOAK_SECONDS:-}" =~ ^[0-9]{1,3}$ ]] || LINK_TEST_SOAK_SECONDS=8
+[[ "${LINK_TEST_HANDSHAKE_TIMEOUT:-}" =~ ^[0-9]{1,3}$ ]] || LINK_TEST_HANDSHAKE_TIMEOUT=40
+readonly LINK_TEST_SOAK_SECONDS
+readonly LINK_TEST_HANDSHAKE_TIMEOUT
 readonly LINK_TEST_LISTEN_SECONDS=1200
-readonly LINK_TEST_HANDSHAKE_TIMEOUT=40
 readonly LINK_TEST_PAYLOAD_BYTES=262144
 
 LINK_TEST_DIR=""
 LINK_TEST_BIN=""
 LINK_TEST_SOURCE=""
 LINK_TEST_PIDS=()
-declare -A LT_PID=() LT_REACH=() LT_HS_MS=() LT_RTT_MS=() LT_XFER_MS=() LT_STATE=()
+declare -A LT_PID=() LT_REACH=() LT_HS_MS=() LT_RTT_MS=() LT_XFER_MS=() LT_STATE=() LT_HS_CLASS=()
 
 link_test_cleanup() {
   local pid tries
@@ -5040,7 +5042,7 @@ link_test_port_busy() {
 
 link_test_ports_available() {
   local base="$1" i count=${#LINK_TEST_TRANSPORTS[@]}
-  (( base >= 1024 && base + LINK_TEST_BEACON_OFFSET <= 65535 )) || return 1
+  (( base >= 1 && base + LINK_TEST_BEACON_OFFSET <= 65535 )) || return 1
   link_test_port_busy $((base + LINK_TEST_BEACON_OFFSET)) && return 1
   for (( i = 0; i < count; i++ )); do
     if link_test_port_busy $((base + i)) || link_test_port_busy $((base + LINK_TEST_FWD_OFFSET + i)); then
@@ -5387,24 +5389,90 @@ link_test_format_ms() {
 }
 
 link_test_verdict_text() {
+  local detail=""
+  [[ -z "${2:-}" ]] || detail=" (${2})"
   case "$1" in
     PASS)        printf 'OK - handshake and data verified' ;;
-    BLOCK_PORT)  printf 'BLOCKED - TCP port unreachable' ;;
-    NO_HS)       printf 'BLOCKED - port open but handshake is cut' ;;
+    BLOCK_PORT)  printf 'UNREACHABLE - TCP connect to this test port failed' ;;
+    NO_HS)       printf 'NO HANDSHAKE - port open, Backhaul handshake not established%s' "$detail" ;;
     NO_DATA)     printf 'UNUSABLE - handshake ok, data dropped' ;;
     FWD_CLOSED)  printf 'UNVERIFIED - forward test port closed (Iran firewall)' ;;
     UNSTABLE)    printf 'UNUSABLE - tunnel dropped during the test' ;;
-    ERROR)       printf 'client failed to start' ;;
+    UNSUPPORTED) printf 'NOT TESTED - this Backhaul binary rejects the transport' ;;
+    CONFIG)      printf 'NOT TESTED - Backhaul rejected the test configuration' ;;
+    ERROR)       printf 'NOT TESTED - client exited before a handshake' ;;
     *)           printf '%s' "$1" ;;
   esac
+}
+
+# Link-Test-only handshake detector (reads a client log on stdin, prints one state).
+# The shared client_control_channel_healthy() is deliberately left untouched.
+# States: ESTABLISHED, LOST (was up, now down), CONNECTING, REFUSED, TIMEOUT,
+# UNREACHABLE, RESET, WS_REJECT, AUTH, TLS_CERT, TLS_MISMATCH, UNSUPPORTED, CONFIG, FATAL.
+link_test_handshake_state() {
+  awk '
+    BEGIN { esc = sprintf("%c", 27) }
+    { sub(/\r$/, ""); gsub(esc "\\[[0-9;]*m", ""); line = tolower($0) }
+    line ~ /control channel established successfully/ { state = "ESTABLISHED"; ever = 1; next }
+    line ~ /attempting to establish a new .*control channel/ { state = ever ? "LOST" : "CONNECTING"; next }
+    line ~ /control channel has been closed|restarting client/ { state = ever ? "LOST" : "CONNECTING"; next }
+    line ~ /\[fatal\]/ {
+      if (line ~ /invalid transport|transport must be one of|unsupported transport|unknown transport/) state = "UNSUPPORTED"
+      else if (line ~ /failed to load configuration|toml:|invalid config/) state = "CONFIG"
+      else state = "FATAL"
+      next
+    }
+    line ~ /\[error\]|control channel dialer|failed to .*channel|dial (tcp|udp)/ {
+      cls = ""
+      if (line ~ /first record does not look like a tls handshake/) cls = "TLS_MISMATCH"
+      else if (line ~ /x509|certificate|tls:/) cls = "TLS_CERT"
+      else if (line ~ /websocket: bad handshake/) cls = "WS_REJECT"
+      else if (line ~ /invalid token|token mismatch|authentication failed|unauthorized/) cls = "AUTH"
+      else if (line ~ /connection refused/) cls = "REFUSED"
+      else if (line ~ /i\/o timeout|timed out|deadline exceeded/) cls = "TIMEOUT"
+      else if (line ~ /network is unreachable|no route to host/) cls = "UNREACHABLE"
+      else if (line ~ /connection reset|broken pipe|(^|[^a-z])eof($|[^a-z])/) cls = "RESET"
+      if (cls != "") state = ever ? "LOST" : cls
+      next
+    }
+    END { print (state == "" ? "CONNECTING" : state) }
+  '
+}
+
+# Classifies why a temporary Backhaul server did not start (log on stdin).
+link_test_server_failure_class() {
+  awk '
+    { line = tolower($0) }
+    c == "" && line ~ /address already in use/ { c = "ADDR_IN_USE" }
+    c == "" && line ~ /permission denied/ { c = "BIND_DENIED" }
+    c == "" && line ~ /invalid transport|transport must be one of|unsupported transport/ { c = "UNSUPPORTED" }
+    c == "" && line ~ /failed to load configuration|toml:/ { c = "CONFIG" }
+    c == "" && line ~ /\[fatal\]/ { c = "FATAL" }
+    END { print (c == "" ? "NONE" : c) }
+  '
+}
+
+# Prints how a TCP connect ended: open, refused, unreachable, timeout or failed.
+link_test_tcp_connect_class() {
+  local host="$1" port="$2" out rc=0
+  # shellcheck disable=SC2016
+  out=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" 2>&1) || rc=$?
+  if (( rc == 0 )); then printf 'open'; return 0; fi
+  if (( rc == 124 )); then printf 'timeout'; return 1; fi
+  case "${out,,}" in
+    *refused*) printf 'refused' ;;
+    *"no route"*|*unreachable*) printf 'unreachable' ;;
+    *) printf 'failed' ;;
+  esac
+  return 1
 }
 
 link_test_probe_run() {
   local host="$1" base="$2" token="$3" count=${#LINK_TEST_TRANSPORTS[@]}
   local i t ctrl fwd echo_port cfg log remote tmp rtt xfer start_ms now_ms deadline pending pid responder_pid
   local -a to_run=() reach_pids=() passed=() inconclusive=()
-  local blocked_port=0 blocked_hs=0 no_data=0 fwd_ok attempt beacon_rc=0 token_verified=0 soak_needed=0
-  LT_PID=(); LT_REACH=(); LT_HS_MS=(); LT_RTT_MS=(); LT_XFER_MS=(); LT_STATE=()
+  local blocked_port=0 blocked_hs=0 no_data=0 untested=0 fwd_ok attempt beacon_rc=0 token_verified=0 soak_needed=0 hs_state
+  LT_PID=(); LT_REACH=(); LT_HS_MS=(); LT_RTT_MS=(); LT_XFER_MS=(); LT_STATE=(); LT_HS_CLASS=()
   echo_port=$((base + LINK_TEST_ECHO_OFFSET))
 
   if link_test_port_busy "$echo_port"; then
@@ -5471,10 +5539,16 @@ link_test_probe_run() {
     for t in "${to_run[@]}"; do
       [[ -z "${LT_STATE[$t]:-}" && -z "${LT_HS_MS[$t]:-}" ]] || continue
       log="${LINK_TEST_DIR}/client-${t}.log"
-      if ! kill -0 "${LT_PID[$t]}" 2>/dev/null; then
-        LT_STATE[$t]="ERROR"; continue
+      hs_state=$(link_test_handshake_state < "$log")
+      if ! kill -0 "${LT_PID[$t]}" 2>/dev/null && [[ "$hs_state" != "ESTABLISHED" ]]; then
+        case "$hs_state" in
+          UNSUPPORTED) LT_STATE[$t]="UNSUPPORTED" ;;
+          CONFIG|FATAL) LT_STATE[$t]="CONFIG" ;;
+          *) LT_STATE[$t]="ERROR" ;;
+        esac
+        continue
       fi
-      if client_control_channel_healthy < "$log"; then
+      if [[ "$hs_state" == "ESTABLISHED" ]]; then
         now_ms=$(date +%s%3N); LT_HS_MS[$t]=$((now_ms - start_ms))
       else
         pending=1
@@ -5489,6 +5563,16 @@ link_test_probe_run() {
     [[ -z "${LT_STATE[$t]:-}" ]] || continue
     if [[ -z "${LT_HS_MS[$t]:-}" ]]; then
       LT_STATE[$t]="NO_HS"
+      hs_state=$(link_test_handshake_state < "${LINK_TEST_DIR}/client-${t}.log")
+      case "$hs_state" in
+        TLS_CERT) LT_HS_CLASS[$t]="TLS certificate error" ;;
+        TLS_MISMATCH) LT_HS_CLASS[$t]="peer answered with non-TLS data" ;;
+        WS_REJECT) LT_HS_CLASS[$t]="WebSocket upgrade rejected" ;;
+        AUTH) LT_HS_CLASS[$t]="token rejected" ;;
+        REFUSED) LT_HS_CLASS[$t]="connection refused" ;;
+        TIMEOUT) LT_HS_CLASS[$t]="dial timed out" ;;
+        *) LT_HS_CLASS[$t]="no handshake within ${LINK_TEST_HANDSHAKE_TIMEOUT}s" ;;
+      esac
       continue
     fi
     for (( i = 0; i < count; i++ )); do [[ "${LINK_TEST_TRANSPORTS[$i]}" == "$t" ]] && break; done
@@ -5510,7 +5594,7 @@ link_test_probe_run() {
     if rtt=$(link_test_tcp_rtt "$host" "$fwd") \
         && xfer=$(link_test_tcp_transfer "$host" "$fwd" "$LINK_TEST_PAYLOAD_BYTES"); then
       LT_RTT_MS[$t]="$rtt"; LT_XFER_MS[$t]="$xfer"
-      if kill -0 "${LT_PID[$t]}" 2>/dev/null && client_control_channel_healthy < "${LINK_TEST_DIR}/client-${t}.log"; then
+      if kill -0 "${LT_PID[$t]}" 2>/dev/null && [[ "$(link_test_handshake_state < "${LINK_TEST_DIR}/client-${t}.log")" == "ESTABLISHED" ]]; then
         LT_STATE[$t]="PASS"
       else
         LT_STATE[$t]="UNSTABLE"
@@ -5530,7 +5614,7 @@ link_test_probe_run() {
       [[ "${LT_STATE[$t]:-}" == "PASS" ]] || continue
       for (( i = 0; i < count; i++ )); do [[ "${LINK_TEST_TRANSPORTS[$i]}" == "$t" ]] && break; done
       fwd=$((base + LINK_TEST_FWD_OFFSET + i))
-      if ! kill -0 "${LT_PID[$t]}" 2>/dev/null || ! client_control_channel_healthy < "${LINK_TEST_DIR}/client-${t}.log"; then
+      if ! kill -0 "${LT_PID[$t]}" 2>/dev/null || [[ "$(link_test_handshake_state < "${LINK_TEST_DIR}/client-${t}.log")" != "ESTABLISHED" ]]; then
         LT_STATE[$t]="UNSTABLE"
       elif [[ "$t" == "udp" ]]; then
         link_test_udp_echo "$host" "$fwd" > /dev/null || LT_STATE[$t]="UNSTABLE"
@@ -5549,6 +5633,7 @@ link_test_probe_run() {
       BLOCK_PORT) blocked_port=$((blocked_port + 1)) ;;
       NO_HS) blocked_hs=$((blocked_hs + 1)) ;;
       NO_DATA|UNSTABLE) no_data=$((no_data + 1)) ;;
+      UNSUPPORTED|CONFIG|ERROR) untested=$((untested + 1)) ;;
     esac
     printf '%-9s %-6s %-7s %-10s %-10s %-10s ' "$t" "$((base + i))" "${LT_REACH[$t]:-?}" \
       "$(link_test_format_ms "${LT_HS_MS[$t]:-}")" "$(link_test_format_ms "${LT_RTT_MS[$t]:-}")" "$(link_test_format_ms "${LT_XFER_MS[$t]:-}")"
@@ -5557,7 +5642,7 @@ link_test_probe_run() {
     elif [[ "${LT_STATE[$t]:-}" == "FWD_CLOSED" ]]; then
       printf '%b%s%b\n' "$C_YELLOW" "$(link_test_verdict_text FWD_CLOSED)" "$C_RESET"
     else
-      printf '%b%s%b\n' "$C_RED" "$(link_test_verdict_text "${LT_STATE[$t]:-?}")" "$C_RESET"
+      printf '%b%s%b\n' "$C_RED" "$(link_test_verdict_text "${LT_STATE[$t]:-?}" "${LT_HS_CLASS[$t]:-}")" "$C_RESET"
     fi
   done
 
@@ -5587,29 +5672,41 @@ link_test_probe_run() {
     warn "The forward test ports are closed from outside. Open them in the Iran firewall (the listener printed the list) and run the test again."
     return 1
   fi
-  if (( blocked_hs > 0 && token_verified == 0 )); then
-    printf '%bVERDICT: INCONCLUSIVE - handshakes failed, but the pairing code could not be verified.%b\n' "$C_BOLD$C_YELLOW" "$C_RESET"
-    warn "A wrong or stale code looks exactly like a blocked path. Check the code on the Iran server and that TCP port $((base + LINK_TEST_BEACON_OFFSET)) is open, then run the test again."
+  if (( blocked_hs == 0 && no_data == 0 )); then
+    printf '%bVERDICT: INCONCLUSIVE - the test ports could not be exercised; your intended port was not tested.%b\n' "$C_BOLD$C_YELLOW" "$C_RESET"
+    if (( blocked_port > 0 )); then
+      if (( token_verified )); then
+        info "The Iran listener answered the pairing check, but the automatically chosen test ports were not reachable from here."
+      else
+        info "No test port was reachable. If the Iran screen still shows the listeners running, check the IP; otherwise start the listener again."
+      fi
+      info "That says nothing about your intended production port, which may be open."
+    fi
+    if (( untested > 0 )); then
+      warn "${untested} transport(s) could not start with this Backhaul binary or test configuration; that is a local result, not a network one."
+    fi
+    info "Test your real control port and transport directly: Iran server -> option 3, then foreign server -> option 2 with the new code."
     return 1
   fi
-  printf '%bVERDICT: NO-GO - do not create a tunnel between these two servers right now.%b\n' "$C_BOLD$C_RED" "$C_RESET"
-  if (( blocked_port > 0 && blocked_hs == 0 && no_data == 0 )); then
-    if (( token_verified )); then
-      info "The Iran listener answered, but every test port is unreachable: they are filtered on the path or by the Iran firewall."
-    else
-      info "No test port is reachable. If the Iran screen still shows the servers as listening, the path to that server is blocked; otherwise start the listener and run the test again."
-    fi
-  elif (( no_data > 0 )); then
-    info "Connections are accepted but data does not pass: the path throttles or drops tunnel traffic."
-  else
-    info "Ports answer but every tunnel handshake is cut: the path is actively filtering these protocols."
+  if (( no_data == 0 && token_verified == 0 )); then
+    printf '%bVERDICT: INCONCLUSIVE - handshakes failed, but the pairing code could not be verified.%b\n' "$C_BOLD$C_YELLOW" "$C_RESET"
+    warn "A wrong or stale code looks like a failed handshake. Check the code on the Iran server and that TCP port $((base + LINK_TEST_BEACON_OFFSET)) is open, then run the test again."
+    return 1
   fi
-  info "A tunnel built on this path would not work either, so no setting in the Manager can fix it. Try again later, or test a different server pair."
+  printf '%bVERDICT: NO-GO on the tested ports - no transport completed a verified tunnel there.%b\n' "$C_BOLD$C_RED" "$C_RESET"
+  if (( no_data > 0 )); then
+    info "Connections are accepted but data does not pass on the tested ports."
+  else
+    info "Test ports answer but every Backhaul handshake failed (see the Handshake column details above)."
+  fi
+  info "This covers only the tested ports and transports. Use the exact-port test (Iran server -> option 3) for your intended port."
   return 1
 }
 
 link_test_probe() {
-  local host code base token source_letter source_repo rc=0
+  local host code base token source_letter source_repo rc=0 exact=0
+  local x_transport="" x_ctrl="" x_fwd="" x_beacon="" x_echo=""
+  local exact_re='^x-(tcp|tcpmux|udp|ws|wss|wsmux|wssmux)-([0-9]{1,5})-([0-9]{1,5})-([0-9]{1,5})-([0-9]{1,5})-([0-9a-f]{16})-([pm])$'
   printf '\n%b===== Link test: foreign side (probe) =====%b\n' "$C_BOLD" "$C_RESET"
   if ! command -v python3 >/dev/null 2>&1; then
     err "python3 is required for the local echo responder."
@@ -5619,11 +5716,18 @@ link_test_probe() {
   host=$(ask_host "Iran server IP or hostname")
   while true; do
     code=$(ask "Pairing code shown on the Iran server")
-    if [[ "$code" =~ ^([0-9]{4,5})-([0-9a-f]{16})-([pm])$ ]]; then
+    if [[ "$code" =~ $exact_re ]]; then
+      x_transport="${BASH_REMATCH[1]}"; x_ctrl="${BASH_REMATCH[2]}"; x_fwd="${BASH_REMATCH[3]}"
+      x_beacon="${BASH_REMATCH[4]}"; x_echo="${BASH_REMATCH[5]}"; token="${BASH_REMATCH[6]}"; source_letter="${BASH_REMATCH[7]}"
+      if validate_port "$x_ctrl" && validate_port "$x_fwd" && validate_port "$x_echo" \
+          && { [[ "$x_beacon" == "0" ]] || validate_port "$x_beacon"; }; then
+        exact=1; break
+      fi
+    elif [[ "$code" =~ ^([0-9]{1,5})-([0-9a-f]{16})-([pm])$ ]]; then
       base="${BASH_REMATCH[1]}"; token="${BASH_REMATCH[2]}"; source_letter="${BASH_REMATCH[3]}"
-      validate_port "$base" && (( base >= 1024 && base + LINK_TEST_BEACON_OFFSET <= 65535 )) && break
+      validate_port "$base" && (( base >= 1 && base + LINK_TEST_BEACON_OFFSET <= 65535 )) && break
     fi
-    warn "Invalid pairing code. It looks like 23456-0123456789abcdef-p" >&2
+    warn "Invalid pairing code. It looks like 23456-0123456789abcdef-p or x-wsmux-443-20443-20444-45000-0123456789abcdef-p" >&2
   done
   [[ "$source_letter" == "m" ]] && source_repo="$MUSIXAL_BACKHAUL_REPO" || source_repo="$POWERMATIN_BACKHAUL_REPO"
   LINK_TEST_DIR=$(mktemp -d /tmp/backhaul-linktest.XXXXXX) || return 1
@@ -5632,10 +5736,369 @@ link_test_probe() {
     rollback_active_transaction "binary preparation failure" || true
     return 1
   fi
-  link_test_probe_run "$host" "$base" "$token" || rc=$?
+  if (( exact )); then
+    link_test_exact_probe_run "$host" "$x_transport" "$x_ctrl" "$x_fwd" "$x_beacon" "$x_echo" "$token" || rc=$?
+  else
+    link_test_probe_run "$host" "$base" "$token" || rc=$?
+  fi
   link_test_cleanup
   commit_transaction
   return "$rc"
+}
+
+# ---- Exact-port link test --------------------------------------------------
+# Tests ONE intended control port with ONE transport using a temporary Backhaul
+# listener plus a separate temporary forwarding port. Never touches an existing
+# service: a busy port is reported and nothing is started on it.
+
+LT_X_CODE=""; LT_X_TRANSPORT=""
+LT_X_REACH=""; LT_X_PAIR=""; LT_X_HS=""; LT_X_FWD=""; LT_X_DATA=""; LT_X_SOAK=""; LT_X_VERDICT=""
+
+# rc: 0 started (LT_X_CODE set), 3 local setup problem, 4 port already in use
+link_test_exact_listener_start() {
+  local transport="$1" ctrl="$2" fwd="$3" beacon="$4" echo_port="$5" source_repo="$6"
+  local token cfg log pid beacon_pid tries=0 cls fwd_proto="tcp"
+  LT_X_CODE=""
+  validate_transport "$transport" || { err "Unknown transport: ${transport}"; return 3; }
+  if ! validate_port "$ctrl" || ! validate_port "$fwd" || ! validate_port "$echo_port" \
+      || { [[ "$beacon" != "0" ]] && ! validate_port "$beacon"; }; then
+    err "Ports must be integers from 1 to 65535 (beacon may be 0 to disable it)."
+    return 3
+  fi
+  if [[ "$ctrl" == "$fwd" || ( "$beacon" != "0" && ( "$beacon" == "$ctrl" || "$beacon" == "$fwd" ) ) ]]; then
+    err "The control, forwarding and verification ports must all be different."
+    return 3
+  fi
+  [[ "$transport" == "udp" ]] && fwd_proto="udp"
+  if check_listening_port "$ctrl" tcp; then
+    err "TCP port ${ctrl} is already in use on this server. The existing process was not touched and nothing was started."
+    info "Pick another control port, or run option 4 on the foreign server for a TCP-reachability-only check of that port (it does not verify Backhaul)."
+    return 4
+  fi
+  if check_listening_port "$fwd" "$fwd_proto"; then
+    err "${fwd_proto^^} forwarding test port ${fwd} is already in use on this server. Nothing was started."
+    return 4
+  fi
+  if [[ "$beacon" != "0" ]] && check_listening_port "$beacon" tcp; then
+    err "TCP verification port ${beacon} is already in use on this server. Nothing was started."
+    return 4
+  fi
+  if [[ ! -x "$LINK_TEST_BIN" ]]; then err "No usable Backhaul binary for the test."; return 3; fi
+  if transport_uses_tls "$transport" && [[ ! -f "${LINK_TEST_DIR}/cert.pem" ]]; then
+    command -v openssl >/dev/null 2>&1 || { err "openssl is required for ${transport}."; return 3; }
+    if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
+        -subj "/CN=backhaul-linktest" -keyout "${LINK_TEST_DIR}/key.pem" -out "${LINK_TEST_DIR}/cert.pem" >/dev/null 2>&1; then
+      err "Could not generate the temporary TLS certificate."
+      return 3
+    fi
+  fi
+  if [[ "$beacon" != "0" ]] && ! command -v python3 >/dev/null 2>&1; then
+    err "python3 is required for the verification beacon (or disable it with port 0)."
+    return 3
+  fi
+  token=$(generate_token) || { err "Could not generate a test token."; return 3; }
+  token="${token:0:16}"
+  cfg="${LINK_TEST_DIR}/server-${transport}.toml"
+  log="${LINK_TEST_DIR}/server-${transport}.log"
+  link_test_write_server_config "$cfg" "$transport" "$ctrl" "$token" "$fwd" "$echo_port"
+  "$LINK_TEST_BIN" -c "$cfg" > "$log" 2>&1 < /dev/null 9>&- &
+  pid=$!
+  LINK_TEST_PIDS+=("$pid")
+  while (( tries < 16 )); do
+    kill -0 "$pid" 2>/dev/null || break
+    check_listening_port_for_pid "$ctrl" tcp "$pid" && break
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  if ! kill -0 "$pid" 2>/dev/null || ! check_listening_port_for_pid "$ctrl" tcp "$pid"; then
+    cls=$(link_test_server_failure_class < "$log")
+    case "$cls" in
+      ADDR_IN_USE) err "TCP port ${ctrl} was taken by another process during startup. The existing process was not touched."; cls=4 ;;
+      BIND_DENIED) err "Permission denied binding port ${ctrl}. Ports below 1024 need root or CAP_NET_BIND_SERVICE; nothing was changed."; cls=3 ;;
+      UNSUPPORTED) err "This Backhaul binary does not support the '${transport}' transport (not a network problem)."; cls=3 ;;
+      CONFIG|FATAL) err "The Backhaul binary rejected the temporary test configuration (not a network problem)."; cls=3 ;;
+      *) err "The temporary Backhaul server did not start listening on TCP ${ctrl}."; cls=3 ;;
+    esac
+    tail -n 4 "$log" 2>/dev/null | sed "s/${token}/***/g; s/^/    /" || true
+    return "$cls"
+  fi
+  if [[ "$beacon" != "0" ]]; then
+    link_test_write_beacon "${LINK_TEST_DIR}/beacon.py"
+    LT_TOKEN="$token" python3 "${LINK_TEST_DIR}/beacon.py" "$beacon" > /dev/null 2>&1 < /dev/null 9>&- &
+    beacon_pid=$!
+    LINK_TEST_PIDS+=("$beacon_pid")
+    tries=0
+    while (( tries < 10 )) && kill -0 "$beacon_pid" 2>/dev/null; do
+      check_listening_port_for_pid "$beacon" tcp "$beacon_pid" && break
+      sleep 0.5
+      tries=$((tries + 1))
+    done
+    if ! kill -0 "$beacon_pid" 2>/dev/null || ! check_listening_port_for_pid "$beacon" tcp "$beacon_pid"; then
+      err "The verification beacon did not start on TCP ${beacon}."
+      return 3
+    fi
+  fi
+  LT_X_CODE="x-${transport}-${ctrl}-${fwd}-${beacon}-${echo_port}-${token}-$(link_test_source_letter "$source_repo")"
+  return 0
+}
+
+# Runs every stage against host. Fills LT_X_*; rc: 0 pass, 1 negative/inconclusive,
+# 2 pairing-code mismatch, 3 local setup problem.
+link_test_exact_probe_run() {
+  local host="$1" transport="$2" ctrl="$3" fwd="$4" beacon="$5" echo_port="$6" token="$7"
+  local fwd_proto="tcp" beacon_rc=0 verified=0 cfg log cpid rpid remote hs deadline start_ms now_ms
+  local rtt xfer attempt fwd_ok=0 cls
+  LT_X_REACH=""; LT_X_PAIR="skipped"; LT_X_HS="not attempted"; LT_X_FWD="not attempted"
+  LT_X_DATA="not attempted"; LT_X_SOAK="not attempted"; LT_X_VERDICT=""
+  [[ "$transport" == "udp" ]] && fwd_proto="udp"
+  LT_X_TRANSPORT="$transport"
+  link_test_exact_banner "$host" "$transport" "$ctrl" "$fwd" "$fwd_proto" "$beacon"
+
+  if check_listening_port "$echo_port" tcp || check_listening_port "$echo_port" udp; then
+    err "Local port ${echo_port} (127.0.0.1 echo responder) is busy on this server."
+    LT_X_VERDICT="LOCAL_BUSY"; link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 3
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    err "python3 is required for the local echo responder."
+    LT_X_VERDICT="LOCAL_SETUP"; link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 3
+  fi
+
+  if [[ "$beacon" != "0" ]]; then
+    link_test_beacon_check "$host" "$beacon" "$token" || beacon_rc=$?
+    case "$beacon_rc" in
+      0) verified=1; LT_X_PAIR="code verified" ;;
+      1) LT_X_PAIR="CODE MISMATCH"; LT_X_VERDICT="PAIR_MISMATCH"
+         link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 2 ;;
+      *) cls=$(link_test_tcp_connect_class "$host" "$beacon" || true)
+         LT_X_PAIR="verification endpoint unreachable (${cls:-no answer})" ;;
+    esac
+  fi
+
+  LT_X_REACH=$(link_test_tcp_connect_class "$host" "$ctrl" || true)
+  if [[ "$LT_X_REACH" != "open" ]]; then
+    if (( verified )); then LT_X_VERDICT="CONTROL_UNREACHABLE"; else LT_X_VERDICT="NO_ANSWER"; fi
+    link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 1
+  fi
+
+  link_test_write_responder "${LINK_TEST_DIR}/responder.py"
+  python3 "${LINK_TEST_DIR}/responder.py" "$echo_port" > /dev/null 2>&1 < /dev/null 9>&- &
+  rpid=$!
+  LINK_TEST_PIDS+=("$rpid")
+  sleep 1
+  if ! kill -0 "$rpid" 2>/dev/null || ! check_listening_port "$echo_port" tcp; then
+    err "The local echo responder could not start on 127.0.0.1:${echo_port}."
+    LT_X_VERDICT="LOCAL_SETUP"; link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 3
+  fi
+
+  cfg="${LINK_TEST_DIR}/client-${transport}.toml"
+  log="${LINK_TEST_DIR}/client-${transport}.log"
+  remote=$(format_host_port "$host" "$ctrl")
+  link_test_write_client_config "$cfg" "$transport" "$remote" "$token"
+  "$LINK_TEST_BIN" -c "$cfg" > "$log" 2>&1 < /dev/null 9>&- &
+  cpid=$!
+  LINK_TEST_PIDS+=("$cpid")
+  start_ms=$(date +%s%3N)
+  deadline=$(( $(date +%s) + LINK_TEST_HANDSHAKE_TIMEOUT ))
+  hs="CONNECTING"
+  while (( $(date +%s) < deadline )); do
+    hs=$(link_test_handshake_state < "$log")
+    case "$hs" in
+      ESTABLISHED|UNSUPPORTED|CONFIG|FATAL|TLS_CERT|TLS_MISMATCH|AUTH) break ;;
+    esac
+    kill -0 "$cpid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [[ "$hs" != "ESTABLISHED" ]]; then
+    case "$hs" in
+      UNSUPPORTED) LT_X_HS="binary rejected the transport"; LT_X_VERDICT="UNSUPPORTED" ;;
+      CONFIG|FATAL) LT_X_HS="binary rejected the configuration"; LT_X_VERDICT="CONFIG" ;;
+      TLS_CERT) LT_X_HS="TLS certificate/hostname error"; LT_X_VERDICT="TLS_CERT" ;;
+      TLS_MISMATCH) LT_X_HS="peer answered with non-TLS data"; LT_X_VERDICT="TLS_MISMATCH" ;;
+      AUTH) LT_X_HS="token rejected"; LT_X_VERDICT="AUTH" ;;
+      WS_REJECT) LT_X_HS="WebSocket upgrade rejected"; LT_X_VERDICT="WS_REJECT"; (( verified )) || LT_X_VERDICT="HS_UNVERIFIED" ;;
+      *)
+        if ! kill -0 "$cpid" 2>/dev/null; then
+          LT_X_HS="client exited before a handshake"; LT_X_VERDICT="CLIENT_EXIT"
+        else
+          LT_X_HS="not established within ${LINK_TEST_HANDSHAKE_TIMEOUT}s (${hs,,})"; LT_X_VERDICT="NO_HANDSHAKE"
+          (( verified )) || LT_X_VERDICT="HS_UNVERIFIED"
+        fi ;;
+    esac
+    link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"
+    case "$LT_X_VERDICT" in UNSUPPORTED|CONFIG|CLIENT_EXIT) return 3 ;; *) return 1 ;; esac
+  fi
+  now_ms=$(date +%s%3N)
+  LT_X_HS="established ($((now_ms - start_ms)) ms)"
+
+  if [[ "$transport" == "udp" ]]; then
+    if xfer=$(link_test_udp_echo "$host" "$fwd"); then
+      LT_X_FWD="UDP echo answered"; LT_X_DATA="UDP round trip ${xfer} ms"
+    else
+      LT_X_FWD="no UDP reply (filtered port and dropped datagrams look identical)"; LT_X_DATA="failed"
+      LT_X_VERDICT="NO_UDP_REPLY"
+      link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 1
+    fi
+  else
+    for attempt in 1 2 3 4 5 6; do
+      [[ "$(link_test_tcp_connect_class "$host" "$fwd" || true)" == "open" ]] && { fwd_ok=1; break; }
+      sleep 1
+    done
+    if (( fwd_ok == 0 )); then
+      LT_X_FWD="not reachable"; LT_X_VERDICT="FWD_CLOSED"
+      link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 1
+    fi
+    LT_X_FWD="reachable"
+    if rtt=$(link_test_tcp_rtt "$host" "$fwd") && xfer=$(link_test_tcp_transfer "$host" "$fwd" "$LINK_TEST_PAYLOAD_BYTES"); then
+      LT_X_DATA="ok (round trip ${rtt} ms, 256 KiB in ${xfer} ms)"
+    else
+      LT_X_DATA="failed"; LT_X_VERDICT="NO_DATA"
+      link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"; return 1
+    fi
+  fi
+
+  sleep "$LINK_TEST_SOAK_SECONDS"
+  hs=$(link_test_handshake_state < "$log")
+  if ! kill -0 "$cpid" 2>/dev/null || [[ "$hs" != "ESTABLISHED" ]]; then
+    LT_X_SOAK="connection lost"; LT_X_VERDICT="UNSTABLE"
+  elif [[ "$transport" == "udp" ]]; then
+    if link_test_udp_echo "$host" "$fwd" > /dev/null; then LT_X_SOAK="held ${LINK_TEST_SOAK_SECONDS}s"; LT_X_VERDICT="PASS"
+    else LT_X_SOAK="data stopped flowing"; LT_X_VERDICT="UNSTABLE"; fi
+  elif link_test_tcp_rtt "$host" "$fwd" > /dev/null; then
+    LT_X_SOAK="held ${LINK_TEST_SOAK_SECONDS}s"; LT_X_VERDICT="PASS"
+  else
+    LT_X_SOAK="data stopped flowing"; LT_X_VERDICT="UNSTABLE"
+  fi
+  link_test_exact_report "$host" "$ctrl" "$beacon" "$fwd" "$fwd_proto"
+  [[ "$LT_X_VERDICT" == "PASS" ]]
+}
+
+link_test_exact_banner() {
+  local host="$1" transport="$2" ctrl="$3" fwd="$4" fwd_proto="$5" beacon="$6"
+  printf '\n%bExact-port test: %s transport%b\n' "$C_BOLD" "$transport" "$C_RESET"
+  printf '  Control     : %s:%s/tcp (the port under test)\n' "$host" "$ctrl"
+  printf '  Forwarding  : %s:%s/%s (temporary data-path port)\n' "$host" "$fwd" "$fwd_proto"
+  if [[ "$beacon" != "0" ]]; then printf '  Verification: %s:%s/tcp (pairing check)\n' "$host" "$beacon"
+  else printf '  Verification: disabled (pairing code will not be verified)\n'; fi
+}
+
+link_test_exact_report() {
+  local host="$1" ctrl="$2" beacon="$3" fwd="$4" fwd_proto="$5" colour="$C_YELLOW" title detail
+  case "$LT_X_VERDICT" in
+    PASS) colour="$C_GREEN"; title="PASS - control, handshake and data forwarding verified on the tested port"
+      detail="This used a temporary listener on port ${ctrl}; stop anything else from using it before creating the real tunnel." ;;
+    CONTROL_UNREACHABLE) colour="$C_RED"; title="FAIL - control port ${ctrl}/tcp not reachable (${LT_X_REACH})"
+      detail="The listener host answered the pairing check, but this port did not. This test cannot tell whether a firewall, the provider or the path is responsible." ;;
+    NO_ANSWER) title="INCONCLUSIVE - control port ${ctrl}/tcp not reachable and the listener could not be confirmed (${LT_X_REACH})"
+      detail="Check the IP, that the listener is still running, and the Iran firewall for the ports listed above; then run again." ;;
+    PAIR_MISMATCH) colour="$C_RED"; title="PAIRING CODE MISMATCH - something answered the verification port with a different proof"
+      detail="Re-enter the code currently shown on the Iran server (a restarted listener has a new code)." ;;
+    HS_UNVERIFIED) title="INCONCLUSIVE - control port reachable, handshake failed, pairing code unverified"
+      detail="A wrong code and a blocked handshake look the same here. Make the verification port reachable (or fix the code) and run again." ;;
+    NO_HANDSHAKE) colour="$C_RED"; title="FAIL - control port reachable, Backhaul handshake not established"
+      detail="TCP connects but the Backhaul handshake never completed although the pairing code is verified." ;;
+    WS_REJECT) colour="$C_RED"; title="FAIL - WebSocket upgrade rejected although the pairing code is verified"
+      detail="The peer answered the upgrade with an HTTP rejection; an intermediary or a different service on that port is a likely cause." ;;
+    TLS_CERT) colour="$C_RED"; title="FAIL - TLS certificate/hostname error during the handshake"
+      detail="See the client log lines below." ;;
+    TLS_MISMATCH) colour="$C_RED"; title="FAIL - TLS expected but the peer answered with non-TLS data"
+      detail="Something other than the TLS listener is answering on this port." ;;
+    AUTH) colour="$C_RED"; title="FAIL - the listener rejected the token"
+      detail="Use the code currently shown on the Iran server." ;;
+    FWD_CLOSED) title="INCONCLUSIVE - handshake established, forwarding test port ${fwd}/${fwd_proto} not reachable"
+      detail="Open that port in the Iran firewall (the listener printed it) and run again; data forwarding is unverified." ;;
+    NO_UDP_REPLY) colour="$C_RED"; title="FAIL - handshake established, no UDP echo returned from port ${fwd}/udp"
+      detail="UDP cannot separate a filtered forwarding port from dropped datagrams." ;;
+    NO_DATA) colour="$C_RED"; title="FAIL - handshake established, data round trip failed"
+      detail="The forwarding port accepts connections but data did not make the round trip." ;;
+    UNSTABLE) colour="$C_RED"; title="FAIL - connection lost during the stability check"
+      detail="The tunnel came up and carried data, then did not hold for ${LINK_TEST_SOAK_SECONDS}s." ;;
+    UNSUPPORTED) title="INCONCLUSIVE - this Backhaul binary rejects the '${LT_X_TRANSPORT}' transport"
+      detail="Local binary limitation, not a network result." ;;
+    CONFIG) title="INCONCLUSIVE - Backhaul rejected the temporary configuration"
+      detail="Local setup or binary-version problem, not a network result." ;;
+    CLIENT_EXIT) title="INCONCLUSIVE - the test client exited before a handshake"
+      detail="Local setup problem, not a network result." ;;
+    LOCAL_BUSY) title="INCONCLUSIVE - a local test port is busy"
+      detail="Restart the listener so the code uses a different echo port." ;;
+    *) title="INCONCLUSIVE - local test setup problem"; detail="Not a network result." ;;
+  esac
+  printf '\n%b%-14s%b %s\n' "$C_BOLD" "Control" "$C_RESET" "${LT_X_REACH:-not tested}"
+  printf '%b%-14s%b %s\n' "$C_BOLD" "Pairing" "$C_RESET" "$LT_X_PAIR"
+  printf '%b%-14s%b %s\n' "$C_BOLD" "Handshake" "$C_RESET" "$LT_X_HS"
+  printf '%b%-14s%b %s\n' "$C_BOLD" "Forwarding" "$C_RESET" "$LT_X_FWD"
+  printf '%b%-14s%b %s\n' "$C_BOLD" "Data" "$C_RESET" "$LT_X_DATA"
+  printf '%b%-14s%b %s\n' "$C_BOLD" "Stability" "$C_RESET" "$LT_X_SOAK"
+  printf '\n%b%s%b\n' "$C_BOLD$colour" "$title" "$C_RESET"
+  info "$detail"
+  case "$LT_X_VERDICT" in
+    TLS_CERT|TLS_MISMATCH|NO_HANDSHAKE|WS_REJECT|AUTH|CLIENT_EXIT|CONFIG|UNSUPPORTED|HS_UNVERIFIED)
+      tail -n 3 "${LINK_TEST_DIR}/client-${LT_X_TRANSPORT}.log" 2>/dev/null | sed 's/^/    /' || true ;;
+  esac
+  : "$host" "$beacon"
+}
+
+link_test_exact_listen() {
+  local transport ctrl fwd beacon echo_port source_repo rc=0 waited=0 default_fwd default_beacon
+  printf '\n%b===== Link test: Iran side, exact port =====%b\n' "$C_BOLD" "$C_RESET"
+  if [[ -x "$BACKHAUL_BIN" && ! -L "$BACKHAUL_BIN" ]]; then
+    source_repo=$(current_backhaul_source)
+    [[ "$source_repo" != "$UNKNOWN_BACKHAUL_SOURCE" ]] || source_repo="$DEFAULT_BACKHAUL_SOURCE"
+  else
+    source_repo=$(choose_backhaul_source)
+  fi
+  while true; do
+    transport=$(ask "Transport to test (${LINK_TEST_TRANSPORTS[*]})" "wsmux")
+    validate_transport "$transport" && break
+    warn "Unknown transport." >&2
+  done
+  ctrl=$(ask_port "Control port to test (TCP; 1-65535, e.g. 443)" "443")
+  default_fwd=$((20000 + RANDOM % 20000))
+  fwd=$(ask_port "Forwarding test port ($([[ "$transport" == "udp" ]] && printf UDP || printf TCP); must differ from the control port)" "$default_fwd")
+  default_beacon=$((20000 + RANDOM % 20000))
+  beacon=$(ask "Verification (pairing) port, TCP, or 0 to disable" "$default_beacon")
+  if [[ "$beacon" != "0" ]] && ! validate_port "$beacon"; then err "Invalid verification port."; return 1; fi
+  echo_port=$((40000 + RANDOM % 20000))
+  LINK_TEST_DIR=$(mktemp -d /tmp/backhaul-linktest.XXXXXX) || return 1
+  begin_transaction link_test_cleanup || { link_test_cleanup; return 1; }
+  if ! link_test_prepare_binary "$source_repo"; then
+    rollback_active_transaction "binary preparation failure" || true
+    return 1
+  fi
+  link_test_exact_listener_start "$transport" "$ctrl" "$fwd" "$beacon" "$echo_port" "$source_repo" || rc=$?
+  if (( rc != 0 )); then
+    rollback_active_transaction "listener start failure" || true
+    return 1
+  fi
+  {
+    printf '\n%b===== Pairing code =====%b\n  %s\n\n' "$C_BOLD$C_GREEN" "$C_RESET" "$LT_X_CODE"
+    printf 'On the FOREIGN server: Link test -> option 2, enter this server IP and the code above.\n\n'
+  } > /dev/tty
+  info "Open these ports in this server's firewall if one is active:"
+  printf 'TCP: %s%s\n' "$ctrl" "$([[ "$transport" != "udp" ]] && printf ' %s' "$fwd")"
+  [[ "$beacon" == "0" ]] || printf 'TCP: %s (verification)\n' "$beacon"
+  [[ "$transport" != "udp" ]] || printf 'UDP: %s\n' "$fwd"
+  printf '\n%bWaiting for the foreign side... press Enter to stop (auto-stops in %d min).%b\n' "$C_DIM" "$((LINK_TEST_LISTEN_SECONDS / 60))" "$C_RESET"
+  while (( waited < LINK_TEST_LISTEN_SECONDS )); do
+    if IFS= read -r -t 2 -n 1 _ < /dev/tty 2>/dev/null; then break; fi
+    waited=$((waited + 2))
+  done
+  link_test_cleanup
+  commit_transaction
+  ok "Test listener stopped and temporary files removed."
+}
+
+# Labelled TCP-only diagnostic; it never claims anything about Backhaul.
+link_test_reach_only() {
+  local host ports p cls
+  printf '\n%b===== TCP reachability only =====%b\n' "$C_BOLD" "$C_RESET"
+  host=$(ask_host "Server IP or hostname to check")
+  ports=$(ask "TCP ports to check (space or comma separated)" "443")
+  for p in ${ports//,/ }; do
+    validate_port "$p" || { warn "Skipping invalid port: ${p}"; continue; }
+    cls=$(link_test_tcp_connect_class "$host" "$p" || true)
+    printf '  %s:%s/tcp -> %s\n' "$host" "$p" "$cls"
+  done
+  warn "TCP reachability only: this does NOT verify a Backhaul handshake or data forwarding."
 }
 
 link_test_menu() {
@@ -5644,13 +6107,17 @@ link_test_menu() {
   printf '  Tests the real path between the two servers with throw-away tunnels,\n'
   printf '  then tells you whether tunneling can work and which transport to use.\n'
   printf '  Nothing is installed or changed on either server.\n\n'
-  printf '  1) Iran server: start the test listener (run this first)\n'
-  printf '  2) Foreign server: run the test against the Iran server\n'
+  printf '  1) Iran server: start the test listener, all transports (run this first)\n'
+  printf '  2) Foreign server: run the test (accepts either kind of code)\n'
+  printf '  3) Iran server: listener for ONE exact control port and transport\n'
+  printf '  4) Foreign server: TCP reachability only (no Backhaul check)\n'
   printf '  0) Back\n'
   choice=$(tty_read "Choose: ")
   case "$choice" in
     1) link_test_listen ;;
     2) link_test_probe ;;
+    3) link_test_exact_listen ;;
+    4) link_test_reach_only ;;
     0|"") return 0 ;;
     *) warn "Invalid choice."; return 1 ;;
   esac

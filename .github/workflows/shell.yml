@@ -24,7 +24,8 @@ jobs:
             test.sh \
             tests/test.sh \
             tests/test-v311.sh \
-            tests/test-v312.sh
+            tests/test-v312.sh \
+            tests/test-linktest.sh
           do
             bash -n "$f"
           done
@@ -35,7 +36,9 @@ jobs:
             backhaul-manager.sh \
             test.sh \
             tests/test-v311.sh \
-            tests/test-v312.sh
+            tests/test-v312.sh \
+            tests/test-linktest.sh \
+            tests/test-linktest-integration.sh
 
           shellcheck --exclude=SC2317,SC2329,SC2034 tests/test.sh
 
@@ -47,7 +50,8 @@ jobs:
             test.sh \
             tests/test.sh \
             tests/test-v311.sh \
-            tests/test-v312.sh
+            tests/test-v312.sh \
+            tests/test-linktest.sh
           do
             echo "::group::${suite}"
 
