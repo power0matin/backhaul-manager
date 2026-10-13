@@ -21,6 +21,14 @@
 
 </div>
 
+<p align="center">
+  <img
+    src="./imgs/preview_v3.2.1.png"
+    alt="پیش‌نمایش Backhaul Manager نسخه 3.2.1"
+    width="100%"
+  >
+</p>
+
 Backhaul Manager هر دو سمت یک تانل معکوس Backhaul را تنظیم و مدیریت می‌کند: سرور سمت ایران و کلاینت سمت خارج. این ابزار نصب مرحله‌به‌مرحله، Profileهای نام‌گذاری‌شده، مهاجرت بین sourceها، بکاپ اعتبارسنجی‌شده، بررسی سلامت، rollback و عملیات خط فرمان را به binary اصلی Backhaul اضافه می‌کند.
 
 این پروژه از [`power0matin/Backhaul`](https://github.com/power0matin/Backhaul) و نسخه بالادستی [`Musixal/Backhaul`](https://github.com/Musixal/Backhaul) پشتیبانی می‌کند. می‌توان آن را در کنار Xray، V2Ray، Marzban، 3x-ui/Sanaei، Hiddify و ابزارهای مشابه به کار برد، اما **خود این Manager تنظیمات آن برنامه‌ها را انجام نمی‌دهد**.
@@ -46,22 +54,22 @@ Backhaul Manager هر دو سمت یک تانل معکوس Backhaul را تنظ�
 
 ## امکانات
 
-| بخش | قابلیت |
-| --- | --- |
-| **هر دو سمت تانل** | تنظیم سرور سمت ایران یا کلاینت سمت خارج با یک اسکریپت. |
-| **انتخاب source مربوط به Backhaul** | انتخاب `power0matin/Backhaul` به‌عنوان گزینه پیشنهادی یا `Musixal/Backhaul` هنگام setup. |
-| **هفت transport** | پشتیبانی از `tcp`، `tcpmux`، `udp`، `ws`، `wss`، `wsmux` و `wssmux`. گزینه عمومی پیشنهادی `wsmux` است؛ مسیر خودتان را آزمایش کنید. |
-| **حالت Standard و Advanced** | تنظیم port range و mapping، تنظیم منابع، PROXY protocol، انتقال UDP روی تانل و گزینه‌های مختص هر source. |
-| **Profileهای نام‌گذاری‌شده** | اجرای config و سرویس مستقل، مثل `backhaul-edge-1.service`، با یک Backhaul binary و source مشترک. |
-| **آزمون اتصال پیش از تانل** | تست همه transportها، یک control port و transport مشخص، یا فقط دسترسی TCP پیش از راه‌اندازی تانل. |
-| **تغییرات تراکنشی** | اعتبارسنجی ورودی، snapshot، نوشتن اتمیک فایل‌ها، بررسی سلامت سرویس و تلاش برای rollback پس از شکست config یا upgrade. |
-| **Upgrade و مهاجرت چند-Profile** | بررسی سازگاری، جلوگیری از downgrade تأییدنشده، بررسی Profileهای فعال قبلی و rollback در صورت خطا. |
-| **بکاپ و مهاجرت سرور** | بکاپ با checksum، import/export آرشیو قابل‌انتقال و مهاجرت نصب مدیریت‌شده از طریق SSH. |
-| **Health و Metrics** | بررسی وضعیت سرویس، PID فعلی، listener و control channel، لاگ‌ها، اطلاعات restart و metrics پشتیبانی‌شده. |
-| **مدیریت امن‌تر secret** | تولید token تصادفی رمزنگارانه، مخفی‌کردن ورودی token، escape کردن مقادیر TOML و محدودکردن دسترسی فایل‌های حساس. |
-| **جلوگیری از عملیات هم‌زمان** | استفاده از `flock` برای جلوگیری از تغییر هم‌زمان state مشترک توسط چند session. |
-| **راهنمایی سازگار با فایروال** | تشخیص `ufw` یا `firewalld` و نمایش پورت‌ها و فرمان‌های موردنیاز، بدون دست‌کاری policy فایروال. |
-| **مدیریت با CLI** | اجرای status، diagnostics، عملیات سرویس، بکاپ، Profile، upgrade و migration بدون منوی تعاملی. |
+| بخش                                 | قابلیت                                                                                                                             |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **هر دو سمت تانل**                  | تنظیم سرور سمت ایران یا کلاینت سمت خارج با یک اسکریپت.                                                                             |
+| **انتخاب source مربوط به Backhaul** | انتخاب `power0matin/Backhaul` به‌عنوان گزینه پیشنهادی یا `Musixal/Backhaul` هنگام setup.                                           |
+| **هفت transport**                   | پشتیبانی از `tcp`، `tcpmux`، `udp`، `ws`، `wss`، `wsmux` و `wssmux`. گزینه عمومی پیشنهادی `wsmux` است؛ مسیر خودتان را آزمایش کنید. |
+| **حالت Standard و Advanced**        | تنظیم port range و mapping، تنظیم منابع، PROXY protocol، انتقال UDP روی تانل و گزینه‌های مختص هر source.                           |
+| **Profileهای نام‌گذاری‌شده**        | اجرای config و سرویس مستقل، مثل `backhaul-edge-1.service`، با یک Backhaul binary و source مشترک.                                   |
+| **آزمون اتصال پیش از تانل**         | تست همه transportها، یک control port و transport مشخص، یا فقط دسترسی TCP پیش از راه‌اندازی تانل.                                   |
+| **تغییرات تراکنشی**                 | اعتبارسنجی ورودی، snapshot، نوشتن اتمیک فایل‌ها، بررسی سلامت سرویس و تلاش برای rollback پس از شکست config یا upgrade.              |
+| **Upgrade و مهاجرت چند-Profile**    | بررسی سازگاری، جلوگیری از downgrade تأییدنشده، بررسی Profileهای فعال قبلی و rollback در صورت خطا.                                  |
+| **بکاپ و مهاجرت سرور**              | بکاپ با checksum، import/export آرشیو قابل‌انتقال و مهاجرت نصب مدیریت‌شده از طریق SSH.                                             |
+| **Health و Metrics**                | بررسی وضعیت سرویس، PID فعلی، listener و control channel، لاگ‌ها، اطلاعات restart و metrics پشتیبانی‌شده.                           |
+| **مدیریت امن‌تر secret**            | تولید token تصادفی رمزنگارانه، مخفی‌کردن ورودی token، escape کردن مقادیر TOML و محدودکردن دسترسی فایل‌های حساس.                    |
+| **جلوگیری از عملیات هم‌زمان**       | استفاده از `flock` برای جلوگیری از تغییر هم‌زمان state مشترک توسط چند session.                                                     |
+| **راهنمایی سازگار با فایروال**      | تشخیص `ufw` یا `firewalld` و نمایش پورت‌ها و فرمان‌های موردنیاز، بدون دست‌کاری policy فایروال.                                     |
+| **مدیریت با CLI**                   | اجرای status، diagnostics، عملیات سرویس، بکاپ، Profile، upgrade و migration بدون منوی تعاملی.                                      |
 
 ## پیش‌نیازها
 
@@ -149,15 +157,15 @@ source انتخاب‌شده در state نصب ذخیره شده و برای Upg
 
 این هفت نام transport در Manager و sourceهای پشتیبانی‌شده وجود دارند.
 
-| Transport | توضیح | نیاز اضافه در سرور عملیاتی |
-| --- | --- | --- |
-| `wsmux` | WebSocket چندگانه‌شده؛ نقطه شروع عمومی مناسب | موردی جز تنظیم معمول ندارد |
-| `tcpmux` | TCP چندگانه‌شده | موردی جز تنظیم معمول ندارد |
-| `tcp` | انتقال مستقیم TCP | موردی جز تنظیم معمول ندارد |
-| `ws` | انتقال WebSocket | موردی جز تنظیم معمول ندارد |
-| `wssmux` | WebSocket چندگانه‌شده با TLS | certificate و private key |
-| `wss` | WebSocket با TLS | certificate و private key |
-| `udp` | انتقال UDP | موردی جز تنظیم معمول ندارد |
+| Transport | توضیح                                        | نیاز اضافه در سرور عملیاتی |
+| --------- | -------------------------------------------- | -------------------------- |
+| `wsmux`   | WebSocket چندگانه‌شده؛ نقطه شروع عمومی مناسب | موردی جز تنظیم معمول ندارد |
+| `tcpmux`  | TCP چندگانه‌شده                              | موردی جز تنظیم معمول ندارد |
+| `tcp`     | انتقال مستقیم TCP                            | موردی جز تنظیم معمول ندارد |
+| `ws`      | انتقال WebSocket                             | موردی جز تنظیم معمول ندارد |
+| `wssmux`  | WebSocket چندگانه‌شده با TLS                 | certificate و private key  |
+| `wss`     | WebSocket با TLS                             | certificate و private key  |
+| `udp`     | انتقال UDP                                   | موردی جز تنظیم معمول ندارد |
 
 در `ws`، `wss`، `wsmux` و `wssmux`، در صورت پشتیبانی source انتخاب‌شده، کلاینت می‌تواند مقدار `edge_ip` را نیز تنظیم کند. transportها و فیلدهای config ممکن است با نسخه Backhaul فرق داشته باشند؛ Manager در جریان maintenance و migration سازگاری source و config را بررسی می‌کند.
 
@@ -252,36 +260,36 @@ sudo ./backhaul-manager.sh --self-update
 
 ### مسیرهای مهم
 
-| مسیر | کاربرد |
-| --- | --- |
-| `/opt/backhaul/backhaul` | Backhaul binary نصب‌شده |
-| `/root/backhaul/config.toml` | config Profile پیش‌فرض با permission برابر `0600` |
-| `/root/backhaul/backhaul-info.txt` | خلاصه اطلاعات setup و اتصال با permission برابر `0600` |
-| `/root/backhaul/profiles/<name>/config.toml` | config Profile نام‌دار با permission برابر `0600` |
-| `/etc/systemd/system/backhaul.service` | unit سرویس پیش‌فرض |
-| `/etc/systemd/system/backhaul-<name>.service` | unit سرویس Profile نام‌دار |
-| `/var/lib/backhaul-manager/backups/` | snapshotهای rollback و بکاپ‌ها |
-| `/var/lib/backhaul-manager/backhaul-source` | اطلاعات source انتخاب‌شده |
-| `/var/lib/backhaul-manager/active-profile` | نام Profile انتخاب‌شده |
-| `/var/log/backhaul-manager/` | لاگ مجزای هر اجرا با permission برابر `0600` |
-| `/usr/local/sbin/backhaul-manager` | دستور سراسری اختیاری Manager |
+| مسیر                                          | کاربرد                                                 |
+| --------------------------------------------- | ------------------------------------------------------ |
+| `/opt/backhaul/backhaul`                      | Backhaul binary نصب‌شده                                |
+| `/root/backhaul/config.toml`                  | config Profile پیش‌فرض با permission برابر `0600`      |
+| `/root/backhaul/backhaul-info.txt`            | خلاصه اطلاعات setup و اتصال با permission برابر `0600` |
+| `/root/backhaul/profiles/<name>/config.toml`  | config Profile نام‌دار با permission برابر `0600`      |
+| `/etc/systemd/system/backhaul.service`        | unit سرویس پیش‌فرض                                     |
+| `/etc/systemd/system/backhaul-<name>.service` | unit سرویس Profile نام‌دار                             |
+| `/var/lib/backhaul-manager/backups/`          | snapshotهای rollback و بکاپ‌ها                         |
+| `/var/lib/backhaul-manager/backhaul-source`   | اطلاعات source انتخاب‌شده                              |
+| `/var/lib/backhaul-manager/active-profile`    | نام Profile انتخاب‌شده                                 |
+| `/var/log/backhaul-manager/`                  | لاگ مجزای هر اجرا با permission برابر `0600`           |
+| `/usr/local/sbin/backhaul-manager`            | دستور سراسری اختیاری Manager                           |
 
 ### مقادیر پیش‌فرض Standard mode
 
-| تنظیم | مقدار پیش‌فرض |
-| --- | --- |
-| Control port | `8080` |
-| Tunnel ports | `2052,2082,8002,443` |
-| Transport | `wsmux` |
-| source مربوط به Backhaul | `power0matin/Backhaul` |
-| `keepalive_period` | `20` برای transportهای غیر UDP |
-| `heartbeat` سمت سرور | `20` |
-| `channel_size` | `2048` |
-| `connection_pool` | `8` |
-| `mux_con` | `8` برای transportهای mux سمت سرور |
-| `mux_version` | `1` برای transportهای mux |
-| `web_port` | `0` (خاموش) |
-| `log_level` | `info` |
+| تنظیم                    | مقدار پیش‌فرض                      |
+| ------------------------ | ---------------------------------- |
+| Control port             | `8080`                             |
+| Tunnel ports             | `2052,2082,8002,443`               |
+| Transport                | `wsmux`                            |
+| source مربوط به Backhaul | `power0matin/Backhaul`             |
+| `keepalive_period`       | `20` برای transportهای غیر UDP     |
+| `heartbeat` سمت سرور     | `20`                               |
+| `channel_size`           | `2048`                             |
+| `connection_pool`        | `8`                                |
+| `mux_con`                | `8` برای transportهای mux سمت سرور |
+| `mux_version`            | `1` برای transportهای mux          |
+| `web_port`               | `0` (خاموش)                        |
+| `log_level`              | `info`                             |
 
 تنظیمات Advanced می‌تواند pool، channel، mux، buffer و concurrency را تغییر دهد. `safe` مصرف منابع را محدودتر می‌کند، `balanced` به مقدارهای بالا نزدیک است و `throughput` برای میزبان قوی‌تر concurrency/buffer بیشتری در نظر می‌گیرد. Auto با توجه به CPU و RAM در دسترس یک profile را انتخاب می‌کند. در config کلاینت `heartbeat` نوشته نمی‌شود، چون schema فعلی client در Backhaul چنین فیلدی ندارد. web monitor به‌صورت پیش‌فرض خاموش است. در Advanced mode نسخه PowerMatin می‌توان metrics احراز هویت‌شده را فقط روی loopback فعال کرد؛ برای Musixal v0.7.2 این قابلیت خودکار فعال نمی‌شود، چون آن نسخه امکان تنظیم امن bind روی loopback و احراز هویت را ندارد.
 

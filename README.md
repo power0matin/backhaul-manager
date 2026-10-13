@@ -21,6 +21,16 @@
 
 </div>
 
+</div>
+
+<p align="center">
+  <img
+    src="./imgs/preview_v3.2.1.png"
+    alt="Backhaul Manager v3.2.1 preview"
+    width="100%"
+  >
+</p>
+
 Backhaul Manager configures and maintains both sides of a Backhaul reverse tunnel: the Iran-side server and the foreign-side client. It adds guided setup, named profiles, source migration, validated backups, health checks, rollback, and command-line operations to the underlying Backhaul binary.
 
 It supports [`power0matin/Backhaul`](https://github.com/power0matin/Backhaul) and the [`Musixal/Backhaul`](https://github.com/Musixal/Backhaul) upstream. It can be used alongside Xray, V2Ray, Marzban, 3x-ui/Sanaei, Hiddify, and similar software, but **it does not configure those applications themselves**.
@@ -46,22 +56,22 @@ It supports [`power0matin/Backhaul`](https://github.com/power0matin/Backhaul) an
 
 ## Features
 
-| Area | What it provides |
-| --- | --- |
-| **Both tunnel roles** | Configure the Iran-side server or the foreign-side client with the same script. |
-| **Selectable Backhaul source** | Choose `power0matin/Backhaul` (the recommended default) or `Musixal/Backhaul` during setup. |
-| **Seven transports** | `tcp`, `tcpmux`, `udp`, `ws`, `wss`, `wsmux`, and `wssmux`. `wsmux` is the general default; test your own route before choosing. |
-| **Standard and Advanced modes** | Configure port ranges and mappings, resource-aware tuning, PROXY protocol, UDP-over-tunnel, and source-specific options. |
-| **Named profiles** | Run separate configurations and services such as `backhaul-edge-1.service` while sharing one Backhaul binary and source. |
-| **Pre-tunnel Link Test** | Test all supported transports, a chosen control port and transport, or TCP reachability alone before committing to a tunnel setup. |
-| **Transactional changes** | Validate inputs, create snapshots, write files atomically, verify service health, and attempt rollback after failed configuration or upgrades. |
-| **Multi-profile upgrades and source migration** | Check compatibility, protect against unapproved downgrades, verify previously active profiles, and roll back on failure. |
-| **Backup and host migration** | Create checksum-verified backups, import/export portable archives, and migrate a managed installation over SSH. |
-| **Health and metrics** | Inspect service state, the current process ID, listeners/control-channel health, logs, restart information, and supported metrics. |
-| **Safer secret handling** | Generate a cryptographically random token, hide token input, escape TOML values, and keep sensitive files/logs restricted. |
-| **Concurrent-operation lock** | Use `flock` to prevent concurrent manager sessions from changing shared installation state. |
-| **Firewall-aware guidance** | Detect `ufw` or `firewalld` and print relevant ports or commands without changing the firewall policy. |
-| **CLI maintenance** | Run common status, diagnostics, service, backup, profile, upgrade, and migration tasks without navigating the interactive menu. |
+| Area                                            | What it provides                                                                                                                               |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Both tunnel roles**                           | Configure the Iran-side server or the foreign-side client with the same script.                                                                |
+| **Selectable Backhaul source**                  | Choose `power0matin/Backhaul` (the recommended default) or `Musixal/Backhaul` during setup.                                                    |
+| **Seven transports**                            | `tcp`, `tcpmux`, `udp`, `ws`, `wss`, `wsmux`, and `wssmux`. `wsmux` is the general default; test your own route before choosing.               |
+| **Standard and Advanced modes**                 | Configure port ranges and mappings, resource-aware tuning, PROXY protocol, UDP-over-tunnel, and source-specific options.                       |
+| **Named profiles**                              | Run separate configurations and services such as `backhaul-edge-1.service` while sharing one Backhaul binary and source.                       |
+| **Pre-tunnel Link Test**                        | Test all supported transports, a chosen control port and transport, or TCP reachability alone before committing to a tunnel setup.             |
+| **Transactional changes**                       | Validate inputs, create snapshots, write files atomically, verify service health, and attempt rollback after failed configuration or upgrades. |
+| **Multi-profile upgrades and source migration** | Check compatibility, protect against unapproved downgrades, verify previously active profiles, and roll back on failure.                       |
+| **Backup and host migration**                   | Create checksum-verified backups, import/export portable archives, and migrate a managed installation over SSH.                                |
+| **Health and metrics**                          | Inspect service state, the current process ID, listeners/control-channel health, logs, restart information, and supported metrics.             |
+| **Safer secret handling**                       | Generate a cryptographically random token, hide token input, escape TOML values, and keep sensitive files/logs restricted.                     |
+| **Concurrent-operation lock**                   | Use `flock` to prevent concurrent manager sessions from changing shared installation state.                                                    |
+| **Firewall-aware guidance**                     | Detect `ufw` or `firewalld` and print relevant ports or commands without changing the firewall policy.                                         |
+| **CLI maintenance**                             | Run common status, diagnostics, service, backup, profile, upgrade, and migration tasks without navigating the interactive menu.                |
 
 ## Requirements
 
@@ -149,15 +159,15 @@ If an existing binary has no recorded source, the manager reports `unknown` inst
 
 These are the seven transport names currently supported by the manager and its supported Backhaul sources.
 
-| Transport | Description | Extra production server material |
-| --- | --- | --- |
-| `wsmux` | Multiplexed WebSocket; general starting point | None beyond normal configuration |
-| `tcpmux` | Multiplexed TCP | None beyond normal configuration |
-| `tcp` | Direct TCP transport | None beyond normal configuration |
-| `ws` | WebSocket transport | None beyond normal configuration |
-| `wssmux` | TLS-encrypted multiplexed WebSocket | TLS certificate and private key |
-| `wss` | TLS-encrypted WebSocket | TLS certificate and private key |
-| `udp` | UDP transport | None beyond normal configuration |
+| Transport | Description                                   | Extra production server material |
+| --------- | --------------------------------------------- | -------------------------------- |
+| `wsmux`   | Multiplexed WebSocket; general starting point | None beyond normal configuration |
+| `tcpmux`  | Multiplexed TCP                               | None beyond normal configuration |
+| `tcp`     | Direct TCP transport                          | None beyond normal configuration |
+| `ws`      | WebSocket transport                           | None beyond normal configuration |
+| `wssmux`  | TLS-encrypted multiplexed WebSocket           | TLS certificate and private key  |
+| `wss`     | TLS-encrypted WebSocket                       | TLS certificate and private key  |
+| `udp`     | UDP transport                                 | None beyond normal configuration |
 
 For `ws`, `wss`, `wsmux`, and `wssmux`, the client can optionally use Backhaul's `edge_ip` setting where supported by the selected source. Transport availability and configuration fields can vary by Backhaul release; the manager checks source/config compatibility during maintenance and migration.
 
@@ -252,36 +262,36 @@ sudo ./backhaul-manager.sh --self-update
 
 ### Important paths
 
-| Path | Purpose |
-| --- | --- |
-| `/opt/backhaul/backhaul` | Installed Backhaul binary |
-| `/root/backhaul/config.toml` | Default profile configuration (`0600`) |
-| `/root/backhaul/backhaul-info.txt` | Local setup/connection summary (`0600`) |
-| `/root/backhaul/profiles/<name>/config.toml` | Named profile configuration (`0600`) |
-| `/etc/systemd/system/backhaul.service` | Default managed service unit |
-| `/etc/systemd/system/backhaul-<name>.service` | Named profile service unit |
-| `/var/lib/backhaul-manager/backups/` | Timestamped rollback snapshots and backups |
-| `/var/lib/backhaul-manager/backhaul-source` | Selected Backhaul source metadata |
-| `/var/lib/backhaul-manager/active-profile` | Selected profile name |
-| `/var/log/backhaul-manager/` | Per-run manager logs (`0600`) |
-| `/usr/local/sbin/backhaul-manager` | Optional global manager command |
+| Path                                          | Purpose                                    |
+| --------------------------------------------- | ------------------------------------------ |
+| `/opt/backhaul/backhaul`                      | Installed Backhaul binary                  |
+| `/root/backhaul/config.toml`                  | Default profile configuration (`0600`)     |
+| `/root/backhaul/backhaul-info.txt`            | Local setup/connection summary (`0600`)    |
+| `/root/backhaul/profiles/<name>/config.toml`  | Named profile configuration (`0600`)       |
+| `/etc/systemd/system/backhaul.service`        | Default managed service unit               |
+| `/etc/systemd/system/backhaul-<name>.service` | Named profile service unit                 |
+| `/var/lib/backhaul-manager/backups/`          | Timestamped rollback snapshots and backups |
+| `/var/lib/backhaul-manager/backhaul-source`   | Selected Backhaul source metadata          |
+| `/var/lib/backhaul-manager/active-profile`    | Selected profile name                      |
+| `/var/log/backhaul-manager/`                  | Per-run manager logs (`0600`)              |
+| `/usr/local/sbin/backhaul-manager`            | Optional global manager command            |
 
 ### Standard-mode defaults
 
-| Setting | Default |
-| --- | --- |
-| Control port | `8080` |
-| Tunnel ports | `2052,2082,8002,443` |
-| Transport | `wsmux` |
-| Backhaul source | `power0matin/Backhaul` |
-| `keepalive_period` | `20` for non-UDP transports |
-| Server `heartbeat` | `20` |
-| `channel_size` | `2048` |
-| `connection_pool` | `8` |
-| `mux_con` | `8` for mux server transports |
-| `mux_version` | `1` for mux transports |
-| `web_port` | `0` (disabled) |
-| `log_level` | `info` |
+| Setting            | Default                       |
+| ------------------ | ----------------------------- |
+| Control port       | `8080`                        |
+| Tunnel ports       | `2052,2082,8002,443`          |
+| Transport          | `wsmux`                       |
+| Backhaul source    | `power0matin/Backhaul`        |
+| `keepalive_period` | `20` for non-UDP transports   |
+| Server `heartbeat` | `20`                          |
+| `channel_size`     | `2048`                        |
+| `connection_pool`  | `8`                           |
+| `mux_con`          | `8` for mux server transports |
+| `mux_version`      | `1` for mux transports        |
+| `web_port`         | `0` (disabled)                |
+| `log_level`        | `info`                        |
 
 Advanced tuning can change pool, channel, mux, buffer, and concurrency values. `safe` targets lower resource use, `balanced` follows the defaults above, and `throughput` raises concurrency/buffer limits for stronger hosts. Automatic tuning chooses a profile based on available CPU and RAM. Client configs do not write a `heartbeat` key because the current Backhaul client configuration schema does not expose it. The web monitor is disabled by default. PowerMatin Advanced mode can enable authenticated metrics on loopback; metrics are not exposed automatically for Musixal v0.7.2 because that release cannot configure a safe loopback bind/auth policy.
 
