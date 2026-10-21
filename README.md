@@ -1,6 +1,16 @@
 <div align="center">
 
-# Backhaul Manager
+<h1 align="center">Backhaul Manager</h1>
+
+<!-- repo-badges:start -->
+<p align="center">
+  <a href="https://hits.sh/github.com/power0matin/backhaul-manager/"><img src="https://hits.sh/github.com/power0matin/backhaul-manager.svg?style=flat-square&amp;label=Views&amp;labelColor=18181B&amp;color=0EA5E9&amp;logo=github" alt="Repository Views"/></a>
+  <a href="https://github.com/power0matin/backhaul-manager/stargazers"><img src="https://img.shields.io/github/stars/power0matin/backhaul-manager?style=flat-square&amp;label=Stars&amp;labelColor=18181B&amp;color=F59E0B&amp;logo=github&amp;logoColor=white" alt="GitHub Stars"/></a>
+  <a href="https://github.com/power0matin/backhaul-manager/forks"><img src="https://img.shields.io/github/forks/power0matin/backhaul-manager?style=flat-square&amp;label=Forks&amp;labelColor=18181B&amp;color=6366F1&amp;logo=github&amp;logoColor=white" alt="GitHub Forks"/></a>
+  <a href="https://github.com/power0matin/backhaul-manager/issues"><img src="https://img.shields.io/github/issues/power0matin/backhaul-manager?style=flat-square&amp;label=Issues&amp;labelColor=18181B&amp;color=22C55E&amp;logo=github&amp;logoColor=white" alt="GitHub Issues"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/power0matin/backhaul-manager?style=flat-square&amp;label=License&amp;labelColor=18181B&amp;color=EF4444&amp;logo=github&amp;logoColor=white" alt="GitHub License"/></a>
+</p>
+<!-- repo-badges:end -->
 
 <p><strong>An interactive installer and operations manager for Backhaul reverse tunnels.</strong></p>
 
@@ -378,3 +388,33 @@ See [CHANGELOG.md](./CHANGELOG.md) for release history and unreleased changes.
 Bug reports and pull requests are welcome through [GitHub Issues](https://github.com/power0matin/backhaul-manager/issues) and [Pull Requests](https://github.com/power0matin/backhaul-manager/pulls). For a large behavioral change, open an issue first so the proposal can be checked against the supported Backhaul configuration model.
 
 This project is licensed under the [MIT License](./LICENSE). Backhaul itself is a separate project with its own source and license. See the [official project page](https://matinshahabadi.ir/projects/backhaul-manager/) for the project overview.
+
+## Contact
+
+**Matin Shahabadi**
+
+- Website: [matinshahabadi.ir](https://matinshahabadi.ir)
+- Email: [me@matinshahabadi.ir](mailto:me@matinshahabadi.ir)
+- GitHub: [power0matin](https://github.com/power0matin)
+- LinkedIn: [matin-shahabadi](https://www.linkedin.com/in/matin-shahabadi)
+
+<p align="center">
+  <b>If this helped you, consider giving it a star!</b><br>
+  <sub>Your support keeps the project alive and helps others find it.</sub>
+</p>
+
+<!-- Copy-paste in your Readme.md file -->
+<p align="center">
+  <a href="https://next.ossinsight.io/widgets/official/analyze-repo-stars-history?repo_id=1322866555" target="_blank" style="display: block" align="center">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://next.ossinsight.io/widgets/official/analyze-repo-stars-history/thumbnail.png?repo_id=1322866555&amp;image_size=auto&amp;color_scheme=dark" width="721" height="auto">
+      <img alt="Star History of power0matin/backhaul-manager" src="https://next.ossinsight.io/widgets/official/analyze-repo-stars-history/thumbnail.png?repo_id=1322866555&amp;image_size=auto&amp;color_scheme=light" width="721" height="auto">
+    </picture>
+  </a>
+</p>
+
+<!-- Made with [OSS Insight](https://ossinsight.io/) -->
+
+<p align="center">
+  Created by <a href="https://github.com/power0matin">power0matin</a>
+</p>
