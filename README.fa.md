@@ -21,13 +21,16 @@
 
 </div>
 
-<p align="center">
-  <img
-    src="./imgs/preview_v3.2.1.png"
-    alt="پیش‌نمایش Backhaul Manager نسخه 3.2.1"
-    width="100%"
-  >
-</p>
+<div align="center">
+  <a href="./imgs/preview_v3.2.1.png">
+    <img
+      src="./imgs/preview_v3.2.1.png"
+      alt="پیش‌نمایش رابط کاربری Backhaul Manager نسخه 3.2.1"
+      width="1100"
+    />
+  </a>
+  <p><sub>پیش‌نمایش رابط کاربری Backhaul Manager نسخه 3.2.1 · برای مشاهده در اندازه کامل روی تصویر کلیک کنید</sub></p>
+</div>
 
 Backhaul Manager هر دو سمت یک تانل معکوس Backhaul را تنظیم و مدیریت می‌کند: سرور سمت ایران و کلاینت سمت خارج. این ابزار نصب مرحله‌به‌مرحله، Profileهای نام‌گذاری‌شده، مهاجرت بین sourceها، بکاپ اعتبارسنجی‌شده، بررسی سلامت، rollback و عملیات خط فرمان را به binary اصلی Backhaul اضافه می‌کند.
 
