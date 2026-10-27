@@ -38,7 +38,7 @@
     <img
       src="./imgs/preview_v3.2.1.png"
       alt="Backhaul Manager v3.2.1 — interface preview"
-      width="1100"
+      width="360"
     />
   </a>
   <p><sub>Backhaul Manager v3.2.1 · Interface preview · Click to view full size</sub></p>

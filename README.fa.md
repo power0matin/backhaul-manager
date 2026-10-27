@@ -26,7 +26,7 @@
     <img
       src="./imgs/preview_v3.2.1.png"
       alt="پیش‌نمایش رابط کاربری Backhaul Manager نسخه 3.2.1"
-      width="1100"
+      width="360"
     />
   </a>
   <p><sub>پیش‌نمایش رابط کاربری Backhaul Manager نسخه 3.2.1 · برای مشاهده در اندازه کامل روی تصویر کلیک کنید</sub></p>
