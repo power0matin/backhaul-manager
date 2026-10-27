@@ -351,6 +351,8 @@ s = socket.socket(); s.setsockopt(1, 2, 1); s.bind(("0.0.0.0", int(sys.argv[1]))
 PY
 PROD=$!; EXTRA_PIDS+=("$PROD"); sleep 1
 : > "$tmp/systemctl.calls"
+# This stub is reached indirectly through the sourced manager; ShellCheck cannot trace that call.
+# shellcheck disable=SC2329
 systemctl(){ printf '%s\n' "$*" >> "$tmp/systemctl.calls"; return 1; }
 exact_run ok ws 26910 26920 26921 46910
 assert_eq "exact run passes next to a production listener" PASS "$LT_X_VERDICT"
