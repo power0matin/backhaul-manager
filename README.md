@@ -100,19 +100,11 @@ The manager checks required commands and exits with an error if a mandatory depe
 
 ## Quick start
 
-### Recommended: download, review, then run
+### Fastest: one-command launch
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
-less backhaul-manager.sh
-sudo bash ./backhaul-manager.sh
-```
+These commands start the interactive manager directly from the current `main` branch. They download and execute the script immediately, without a review step. To inspect the code before running it with root privileges, use the safer method below.
 
-The last command starts the interactive manager. If you are already logged in as `root`, omit `sudo`.
-
-### One-command launch
-
-For a root shell:
+If you are already logged in as `root`:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
@@ -126,7 +118,19 @@ curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/b
 
 Do **not** use `sudo bash <(curl ...)`: `sudo` may close the `/dev/fd/...` descriptor used by process substitution. The pipe-to-`sudo bash` form is the supported alternative when privilege elevation is needed.
 
-To install or update the optional global `backhaul-manager` command after reviewing the script, use **Manager install / update** in the interactive menu or `--self-update`. The self-update mechanism performs syntax/version checks and rejects downgrades, but it is not a cryptographically signed update channel.
+### Safer: download, review, then run
+
+Download the script and inspect it before execution:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
+less backhaul-manager.sh
+sudo bash ./backhaul-manager.sh
+```
+
+The last command starts the interactive manager. If you are already logged in as `root`, omit `sudo`.
+
+Both launch methods use the current `main` version, not a pinned or cryptographically signed release. To install or update the optional global `backhaul-manager` command after reviewing the script, use **Manager install / update** in the interactive menu or `--self-update`. The self-update mechanism performs syntax/version checks and rejects downgrades, but it is not a cryptographically signed update channel.
 
 ## Setup workflow
 

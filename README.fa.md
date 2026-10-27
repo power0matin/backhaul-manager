@@ -88,7 +88,27 @@ Manager ابزارهای اجباری را بررسی می‌کند و در صو
 
 ## شروع سریع
 
-### روش پیشنهادی: دانلود، بررسی و سپس اجرا
+### سریع‌ترین روش: اجرای یک‌دستوری
+
+این دستورها منوی تعاملی Manager را مستقیماً از نسخه فعلی شاخه `main` اجرا می‌کنند؛ یعنی اسکریپت پیش از اجرا بازبینی نمی‌شود. اگر می‌خواهید قبل از اجرا با دسترسی `root` کد را بررسی کنید، روش بعدی را انتخاب کنید.
+
+اگر با کاربر `root` وارد شده‌اید:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+```
+
+برای کاربر عادی:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
+```
+
+از دستور `sudo bash <(curl ...)` استفاده نکنید؛ ممکن است `sudo` descriptor مربوط به `/dev/fd/...` را که process substitution استفاده می‌کند ببندد. برای اجرای دستور با دسترسی بالاتر، روش pipe به `sudo bash` را به کار ببرید.
+
+### روش امن‌تر: دانلود، بررسی و سپس اجرا
+
+ابتدا اسکریپت را دانلود و پیش از اجرا بررسی کنید:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
@@ -98,23 +118,7 @@ sudo bash ./backhaul-manager.sh
 
 دستور آخر منوی تعاملی را اجرا می‌کند. اگر از قبل با کاربر `root` وارد شده‌اید، `sudo` لازم نیست.
 
-### اجرای یک‌دستوری
-
-برای shell با دسترسی root:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
-```
-
-برای کاربر غیر root:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
-```
-
-از دستور `sudo bash <(curl ...)` استفاده نکنید؛ ممکن است `sudo` descriptor مربوط به `/dev/fd/...` را که process substitution استفاده می‌کند ببندد. در صورت نیاز به دسترسی بالاتر، فرم pipe به `sudo bash` را به کار ببرید.
-
-برای نصب یا به‌روزرسانی دستور سراسری اختیاری `backhaul-manager` پس از بررسی اسکریپت، گزینه **Manager install / update** یا `--self-update` را اجرا کنید. self-update، syntax و version را بررسی و downgrade را رد می‌کند؛ اما کانال به‌روزرسانی دارای امضای رمزنگاری‌شده نیست.
+هر دو روش، نسخه فعلی شاخه `main` را اجرا می‌کنند؛ این نسخه به یک release ثابت پین نشده و کانال دانلود نیز امضای رمزنگاری‌شده ندارد. برای نصب یا به‌روزرسانی دستور سراسری اختیاری `backhaul-manager` پس از بررسی اسکریپت، گزینه **Manager install / update** یا `--self-update` را اجرا کنید. self-update، syntax و version را بررسی و downgrade را رد می‌کند؛ اما کانال به‌روزرسانی دارای امضای رمزنگاری‌شده نیست.
 
 ## روند راه‌اندازی
 
