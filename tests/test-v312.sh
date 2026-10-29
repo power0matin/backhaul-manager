@@ -37,6 +37,46 @@ dangling_export_is_rejected() (
 assert_success "export refuses a dangling-symlink destination" dangling_export_is_rejected
 
 
+# Service health must verify every configured forwarding port, not only bind_addr.
+server_listener_health_rejects_missing_mapping() (
+  local config_file="$tmp/server-health-config.toml" calls="$tmp/server-health-calls"
+  cat > "$config_file" <<'EOF'
+[server]
+transport = "tcp"
+accept_udp = false
+ports = ["443-444=8443"]
+EOF
+  : > "$calls"
+  check_listening_port_for_pid() {
+    printf '%s/%s\n' "$1" "$2" >> "$calls"
+    [[ "$1" == "443" && "$2" == "tcp" && "$3" == "123" ]]
+  }
+  server_forwarding_listeners_healthy "$config_file" 123 tcp false >/dev/null 2>&1 && return 1
+  grep -Fxq '443/tcp' "$calls" || return 1
+  grep -Fxq '444/tcp' "$calls" || return 1
+)
+assert_success "health probe rejects a missing configured forwarding port" server_listener_health_rejects_missing_mapping
+
+server_listener_health_checks_accept_udp_mapping() (
+  local config_file="$tmp/server-health-udp-config.toml" calls="$tmp/server-health-udp-calls"
+  cat > "$config_file" <<'EOF'
+[server]
+transport = "tcp"
+accept_udp = true
+ports = ["53=53"]
+EOF
+  : > "$calls"
+  check_listening_port_for_pid() {
+    printf '%s/%s\n' "$1" "$2" >> "$calls"
+    [[ "$1" == "53" && "$2" == tcp && "$3" == 123 ]] && return 0
+    return 1
+  }
+  server_forwarding_listeners_healthy "$config_file" 123 tcp true >/dev/null 2>&1 && return 1
+  grep -Fxq '53/tcp' "$calls" || return 1
+  grep -Fxq '53/udp' "$calls" || return 1
+)
+assert_success "health probe verifies UDP listeners when accept_udp is enabled" server_listener_health_checks_accept_udp_mapping
+
 # Integration probes must avoid fixed ports and clean up even on errors/signals.
 integration_test="$ROOT_DIR/tests/test-linktest-integration.sh"
 grep -Fq "trap 'link_test_cleanup' EXIT" "$integration_test" || fail "integration test installs EXIT cleanup"
