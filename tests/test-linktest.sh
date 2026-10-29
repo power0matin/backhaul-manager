@@ -319,6 +319,28 @@ pids=("${LINK_TEST_PIDS[@]}"); dir="$LINK_TEST_DIR"
 begin_transaction link_test_cleanup; rollback_active_transaction "simulated interrupt" >/dev/null 2>&1
 for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && fail "process $p survived rollback"; done; pass
 assert_true "temp dir removed by rollback" test ! -d "$dir"
+
+# ---- 10b. an ordinary/unhandled shell exit must roll back an active operation
+ROOT_DIR="$ROOT_DIR" TEST_TMP="$tmp" bash --noprofile --norc -c '
+  set -Eeuo pipefail
+  source "$ROOT_DIR/backhaul-manager.sh"
+  LINK_TEST_DIR=$(mktemp -d "${TEST_TMP}/exit-rollback.XXXXXX")
+  sleep 120 &
+  child=$!
+  LINK_TEST_PIDS=("$child")
+  printf "%s\\n" "$child" > "${TEST_TMP}/exit-child.pid"
+  printf "%s\\n" "$LINK_TEST_DIR" > "${TEST_TMP}/exit-dir"
+  begin_transaction link_test_cleanup
+  exit 23
+' >"$tmp/exit.out" 2>&1
+exit_rc=$?
+assert_eq "EXIT rollback preserves the original exit code" 23 "$exit_rc"
+exit_child=$(cat "$tmp/exit-child.pid")
+exit_dir=$(cat "$tmp/exit-dir")
+if kill -0 "$exit_child" 2>/dev/null; then fail "EXIT rollback left child process running"; else pass; fi
+assert_true "EXIT rollback removes temporary directory" test ! -d "$exit_dir"
+assert_contains "EXIT rollback records reason" "$(cat "$tmp/exit.out")" "shell exit (status 23)"
+
 exact_run ok ws 26820 26830 26831 46820
 assert_contains "no token in the report" "$X_OUT" "Control"
 assert_not_contains "token is never printed" "$X_OUT" "$TOKEN"
