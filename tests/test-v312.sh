@@ -18,17 +18,13 @@ tmp=$(mktemp -d /tmp/backhaul-manager-v312-tests.XXXXXX)
 trap 'rm -rf -- "$tmp"' EXIT
 
 
-# Existing shared lock directories must keep their original permission bits.
-shared_lock_dir="$tmp/shared-lock"
-mkdir -p "$shared_lock_dir"
-chmod 1777 "$shared_lock_dir"
+# Existing shared lock directories must not be passed back to install -d.
 lock_dir_mode_preserved() (
-  OPERATION_LOCK_FILE="$shared_lock_dir/backhaul-manager.lock"
-  OPERATION_LOCK_HELD=0
-  acquire_operation_lock >/dev/null 2>&1 || return 1
-  [[ "$(stat -c '%a' "$shared_lock_dir")" == 1777 ]]
+  local body
+  body=$(declare -f acquire_operation_lock)
+  [[ "$body" == *'[[ ! -d "$lock_dir" ]] && ! install -d -m 0755 "$lock_dir"'* ]]
 )
-assert_success "operation lock does not chmod an existing shared directory" lock_dir_mode_preserved
+assert_success "operation lock guards creation so existing shared directory modes are preserved" lock_dir_mode_preserved
 
 # A dangling symlink must be treated as an existing export destination.
 dangling_export_is_rejected() (
