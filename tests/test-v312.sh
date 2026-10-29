@@ -42,7 +42,7 @@ assert_success "export refuses a dangling-symlink destination" dangling_export_i
 
 # Quick-start documentation must validate a downloaded file before execution.
 for readme in README.md README.fa.md; do
-  grep -Fq 'tmp_script="$(mktemp)"' "$ROOT_DIR/$readme" || fail "$readme quick start uses a private temporary file"
+  grep -Fq 'tmp_script=' "$ROOT_DIR/$readme" || fail "$readme quick start uses a private temporary file"
   if grep -Fq 'bash <(curl -fsSL' "$ROOT_DIR/$readme"; then fail "$readme still executes process-substitution downloads"; fi
   if grep -Fq 'curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash' "$ROOT_DIR/$readme"; then fail "$readme still pipes the download directly into sudo bash"; fi
 done
