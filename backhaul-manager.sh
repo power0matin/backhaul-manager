@@ -1961,6 +1961,82 @@ client_control_channel_healthy() {
   '
 }
 
+config_port_rules_from_file() {
+  local config_file="$1"
+  [[ -r "$config_file" ]] || return 1
+  awk '
+    /^[[:space:]]*ports[[:space:]]*=/ { in_ports=1 }
+    in_ports {
+      line=$0
+      sub(/[[:space:]]*#.*/, "", line)
+      while (match(line, /"[^"]*"/)) {
+        value=substr(line, RSTART+1, RLENGTH-2)
+        if (value != "") print value
+        line=substr(line, RSTART+RLENGTH)
+      }
+      if (index($0, "]")) exit
+    }
+  ' "$config_file"
+}
+
+server_forwarding_listeners_healthy() {
+  local config_file="$1" pid="$2" transport="$3" accept_udp="$4"
+  local rules_text rule local_binding start_port end_port port port_protocol
+  local -a rules=()
+  rules_text=$(config_port_rules_from_file "$config_file") || {
+    err "Could not parse configured server forwarding ports from ${config_file}."
+    return 1
+  }
+  if [[ -n "$rules_text" ]]; then
+    mapfile -t rules <<< "$rules_text"
+  fi
+
+  case "$transport" in
+    udp) port_protocol="udp" ;;
+    tcp|tcpmux|ws|wss|wsmux|wssmux) port_protocol="tcp" ;;
+    *) err "Cannot verify forwarding ports for unknown transport ${transport}."; return 1 ;;
+  esac
+
+  for rule in "${rules[@]}"; do
+    local_binding="${rule%%=*}"
+    # Address-specific mappings use host:port; bare mappings use port/range.
+    if [[ "$local_binding" == *:* ]]; then
+      start_port="${local_binding##*:}"
+      end_port="$start_port"
+    else
+      start_port="$local_binding"
+      end_port="$local_binding"
+      if [[ "$local_binding" == *-* ]]; then
+        start_port="${local_binding%%-*}"
+        end_port="${local_binding#*-}"
+      fi
+    fi
+    [[ "$start_port" =~ ^[0-9]+$ && "$end_port" =~ ^[0-9]+$ ]] || {
+      err "Cannot verify malformed local forwarding rule: ${rule}"
+      return 1
+    }
+    (( start_port >= 1 && end_port >= start_port && end_port <= 65535 )) || {
+      err "Cannot verify invalid local forwarding range in rule: ${rule}"
+      return 1
+    }
+
+    for (( port=start_port; port<=end_port; port++ )); do
+      if ! check_listening_port_for_pid "$port" "$port_protocol" "$pid"; then
+        err "Configured forwarding listener ${port}/${port_protocol} is not owned by the active Backhaul process (rule: ${rule})."
+        return 1
+      fi
+      # TCP transport with accept_udp enabled also creates UDP listeners for
+      # the configured local forwarding mappings.
+      if [[ "$transport" != "udp" && "$accept_udp" == "true" ]] &&
+          ! check_listening_port_for_pid "$port" udp "$pid"; then
+        err "Configured UDP-over-TCP listener ${port}/udp is not owned by the active Backhaul process (rule: ${rule})."
+        return 1
+      fi
+    done
+  done
+  return 0
+}
+
 service_health_probe() {
   local svc="$1" config_file="$2" role endpoint port protocol transport pid
   service_is_active_name "$svc" || return 1
@@ -1973,7 +2049,10 @@ service_health_probe() {
     validate_endpoint "$endpoint" || return 1
     port="${endpoint##*:}"; port="${port%]}"
     protocol=$(control_protocol)
-    check_listening_port_for_pid "$port" "$protocol" "$pid"
+    check_listening_port_for_pid "$port" "$protocol" "$pid" || return 1
+    local accept_udp
+    accept_udp=$(config_value_from_file "$config_file" accept_udp 2>/dev/null || printf 'false')
+    server_forwarding_listeners_healthy "$config_file" "$pid" "$transport" "$accept_udp"
   elif [[ "$role" == "client" ]]; then
     endpoint=$(config_value_from_file "$config_file" remote_addr 2>/dev/null || true)
     validate_endpoint "$endpoint" || return 1
