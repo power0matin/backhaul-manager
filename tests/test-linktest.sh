@@ -268,15 +268,20 @@ assert_eq "plain peer on a TLS port classified" TLS_MISMATCH "$LT_X_VERDICT"
 link_test_cleanup
 
 # ---- 9. client exit, timeouts, real log formats (captured from power0matin v0.8.0 and Musixal v0.7.2)
-exact_run ok ws 26600 26610 26611 46600 exit_early
+# Allocate a free port block for each subprocess case. The fixed block formerly
+# used here could collide with services or leaked sockets in shared CI runners.
+test_base=$(link_test_pick_base_port) || fail "no free port block for early client exit test"
+exact_run ok ws "$test_base" "$((test_base + LINK_TEST_FWD_OFFSET))" "$((test_base + LINK_TEST_BEACON_OFFSET))" "$((test_base + LINK_TEST_ECHO_OFFSET))" exit_early
 assert_eq "unexpected client exit" CLIENT_EXIT "$LT_X_VERDICT"
 assert_eq "client exit is a local rc" 3 "$X_RC"
 link_test_cleanup
-exact_run ok ws 26610 26615 26616 46610 bad_config
+test_base=$(link_test_pick_base_port) || fail "no free port block for invalid client config test"
+exact_run ok ws "$test_base" "$((test_base + LINK_TEST_FWD_OFFSET))" "$((test_base + LINK_TEST_BEACON_OFFSET))" "$((test_base + LINK_TEST_ECHO_OFFSET))" bad_config
 assert_eq "binary config rejection is not a network verdict" CONFIG "$LT_X_VERDICT"
 assert_eq "config rejection is a local rc" 3 "$X_RC"
 link_test_cleanup
-exact_run ok ws 26620 26630 26631 46620 silent
+test_base=$(link_test_pick_base_port) || fail "no free port block for handshake timeout test"
+exact_run ok ws "$test_base" "$((test_base + LINK_TEST_FWD_OFFSET))" "$((test_base + LINK_TEST_BEACON_OFFSET))" "$((test_base + LINK_TEST_ECHO_OFFSET))" silent
 assert_eq "handshake timeout with verified code" NO_HANDSHAKE "$LT_X_VERDICT"
 link_test_cleanup
 hs(){ link_test_handshake_state; }
