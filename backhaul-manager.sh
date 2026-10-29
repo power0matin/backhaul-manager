@@ -281,7 +281,10 @@ open_operation_lock() {
 acquire_operation_lock() {
   local pid comm rc=0
   (( OPERATION_LOCK_HELD == 0 )) || return 0
-  if ! install -d -m 0755 "$(dirname "$OPERATION_LOCK_FILE")"; then
+  local lock_dir
+  lock_dir="$(dirname "$OPERATION_LOCK_FILE")"
+  # Do not chmod an existing shared system directory such as /run/lock.
+  if [[ ! -d "$lock_dir" ]] && ! install -d -m 0755 "$lock_dir"; then
     err "Could not prepare the Manager lock directory."
     return 1
   fi
@@ -2324,17 +2327,32 @@ validate_backup_archive() {
 }
 
 export_backup_bundle() {
-  local output="$1"
+  local output="$1" output_dir output_name staging=""
   [[ "$output" == /* && "$output" == *.tar.gz ]] || { err "Export path must be an absolute .tar.gz path."; return 1; }
-  if [[ -e "$output" ]]; then err "Refusing to overwrite existing file: ${output}"; return 1; fi
+  # -e alone misses dangling symlinks. Refuse both before expensive work.
+  if [[ -e "$output" || -L "$output" ]]; then err "Refusing to overwrite existing file or symlink: ${output}"; return 1; fi
+  output_dir="$(dirname -- "$output")"
+  output_name="$(basename -- "$output")"
   create_backup "export" || return 1
-  if ! tar -czf "$output" -C "$LAST_BACKUP_DIR" .; then
-    rm -f -- "$output"
+  # Stage in the destination directory, so publishing is an atomic no-clobber
+  # hard-link operation on the same filesystem rather than a racy existence check.
+  staging=$(mktemp "${output_dir}/.${output_name}.XXXXXX") || { err "Could not create a private staging file beside the export destination."; return 1; }
+  if ! tar -czf "$staging" -C "$LAST_BACKUP_DIR" .; then
+    rm -f -- "$staging"
     err "Could not create the portable backup archive."
     return 1
   fi
-  chmod 0600 "$output"
-  validate_backup_archive "$output" || { rm -f -- "$output"; err "Export archive validation failed."; return 1; }
+  if ! chmod 0600 "$staging" || ! validate_backup_archive "$staging"; then
+    rm -f -- "$staging"
+    err "Export archive validation failed."
+    return 1
+  fi
+  if ! ln -- "$staging" "$output"; then
+    rm -f -- "$staging"
+    err "Could not publish the export without overwriting an existing path: ${output}"
+    return 1
+  fi
+  rm -f -- "$staging"
   ok "Portable backup exported: ${output}"
   warn "The archive can contain tokens and TLS private keys; transfer and store it securely."
 }
@@ -2555,9 +2573,14 @@ update_manager_command() {
     err "Refusing Manager downgrade: ${installed_version} -> ${candidate_version}."
     return 1
   fi
-  if ! install -d -m 0755 "$(dirname "$MANAGER_INSTALL_PATH")" \
-      || ! install -m 0755 "$tmp" "${MANAGER_INSTALL_PATH}.new" \
-      || ! mv -f -- "${MANAGER_INSTALL_PATH}.new" "$MANAGER_INSTALL_PATH"; then
+  local install_dir
+  install_dir="$(dirname "$MANAGER_INSTALL_PATH")"
+  # Preserve the permissions of an existing shared directory such as /usr/local/sbin.
+  if { [[ -d "$install_dir" ]] || install -d -m 0755 "$install_dir"; } \
+      && install -m 0755 "$tmp" "${MANAGER_INSTALL_PATH}.new" \
+      && mv -f -- "${MANAGER_INSTALL_PATH}.new" "$MANAGER_INSTALL_PATH"; then
+    :
+  else
     rm -f -- "$tmp" "${MANAGER_INSTALL_PATH}.new"
     err "Could not atomically install the Manager command."
     return 1
