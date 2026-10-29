@@ -31,8 +31,6 @@
 
 </div>
 
-</div>
-
 <div align="center">
   <a href="./imgs/preview_v3.2.1.png">
     <img
@@ -110,16 +108,28 @@ These commands start the interactive manager directly from the current `main` br
 If you are already logged in as `root`:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+tmp_script="$(mktemp)" || exit 1
+trap 'rm -f -- "$tmp_script"' EXIT
+if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
+  echo "Download failed or script is incomplete; refusing to run it." >&2
+  exit 1
+fi
+bash "$tmp_script"
 ```
 
 For a non-root shell:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
+tmp_script="$(mktemp)" || exit 1
+trap 'rm -f -- "$tmp_script"' EXIT
+if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
+  echo "Download failed or script is incomplete; refusing to run it." >&2
+  exit 1
+fi
+sudo bash "$tmp_script"
 ```
 
-Do **not** use `sudo bash <(curl ...)`: `sudo` may close the `/dev/fd/...` descriptor used by process substitution. The pipe-to-`sudo bash` form is the supported alternative when privilege elevation is needed.
+Both commands download to a private temporary file and run a Bash syntax check before execution. A failed or truncated transfer is rejected, and the temporary file is removed when the command exits.
 
 ### Safer: download, review, then run
 

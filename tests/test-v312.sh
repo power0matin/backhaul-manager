@@ -17,6 +17,38 @@ assert_contains(){ local l="$1" hay="$2" needle="$3"; [[ "$hay" == *"$needle"* ]
 tmp=$(mktemp -d /tmp/backhaul-manager-v312-tests.XXXXXX)
 trap 'rm -rf -- "$tmp"' EXIT
 
+
+# Existing shared lock directories must keep their original permission bits.
+shared_lock_dir="$tmp/shared-lock"
+mkdir -p "$shared_lock_dir"
+chmod 1777 "$shared_lock_dir"
+lock_dir_mode_preserved() (
+  OPERATION_LOCK_FILE="$shared_lock_dir/backhaul-manager.lock"
+  OPERATION_LOCK_HELD=0
+  acquire_operation_lock >/dev/null 2>&1 || return 1
+  [[ "$(stat -c '%a' "$shared_lock_dir")" == 1777 ]]
+)
+assert_success "operation lock does not chmod an existing shared directory" lock_dir_mode_preserved
+
+# A dangling symlink must be treated as an existing export destination.
+dangling_export_is_rejected() (
+  local output="$tmp/dangling-export.tar.gz"
+  ln -s "$tmp/should-not-be-created.tar.gz" "$output"
+  create_backup(){ return 99; }
+  export_backup_bundle "$output" >/dev/null 2>&1 && return 1
+  [[ -L "$output" && ! -e "$tmp/should-not-be-created.tar.gz" ]]
+)
+assert_success "export refuses a dangling-symlink destination" dangling_export_is_rejected
+
+# Quick-start documentation must validate a downloaded file before execution.
+for readme in README.md README.fa.md; do
+  grep -Fq 'tmp_script="$(mktemp)"' "$ROOT_DIR/$readme" || fail "$readme quick start uses a private temporary file"
+  if grep -Fq 'bash <(curl -fsSL' "$ROOT_DIR/$readme"; then fail "$readme still executes process-substitution downloads"; fi
+  if grep -Fq 'curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash' "$ROOT_DIR/$readme"; then fail "$readme still pipes the download directly into sudo bash"; fi
+done
+pass
+
+
 # Effective systemd fragment must be honored even outside /etc/systemd/system.
 fragment_path="$tmp/vendor.service"
 printf '[Service]\nExecStart=/root/backhaul/backhaul -c /root/backhaul/config.toml\n' > "$fragment_path"

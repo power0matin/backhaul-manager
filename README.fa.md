@@ -98,16 +98,28 @@ Manager ابزارهای اجباری را بررسی می‌کند و در صو
 اگر با کاربر `root` وارد شده‌اید:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+tmp_script="$(mktemp)" || exit 1
+trap 'rm -f -- "$tmp_script"' EXIT
+if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
+  echo "دانلود ناموفق بود یا اسکریپت ناقص است؛ اجرا انجام نمی‌شود." >&2
+  exit 1
+fi
+bash "$tmp_script"
 ```
 
 برای کاربر عادی:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash
+tmp_script="$(mktemp)" || exit 1
+trap 'rm -f -- "$tmp_script"' EXIT
+if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
+  echo "دانلود ناموفق بود یا اسکریپت ناقص است؛ اجرا انجام نمی‌شود." >&2
+  exit 1
+fi
+sudo bash "$tmp_script"
 ```
 
-از دستور `sudo bash <(curl ...)` استفاده نکنید؛ ممکن است `sudo` descriptor مربوط به `/dev/fd/...` را که process substitution استفاده می‌کند ببندد. برای اجرای دستور با دسترسی بالاتر، روش pipe به `sudo bash` را به کار ببرید.
+هر دو دستور ابتدا فایل را در یک مسیر موقت خصوصی دانلود و با `bash -n` از نظر syntax بررسی می‌کنند؛ اگر دانلود ناموفق یا فایل ناقص باشد اجرا نمی‌شود. فایل موقت هنگام خروج دستور پاک می‌شود.
 
 ### روش امن‌تر: دانلود، بررسی و سپس اجرا
 
