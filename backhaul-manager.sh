@@ -5079,6 +5079,9 @@ link_test_port_busy() {
 link_test_ports_available() {
   local base="$1" i count=${#LINK_TEST_TRANSPORTS[@]}
   (( base >= 1 && base + LINK_TEST_BEACON_OFFSET <= 65535 )) || return 1
+  # The echo responder uses a separate TCP port; include it in availability
+  # checks to avoid accidentally interacting with an unrelated local service.
+  link_test_port_busy $((base + LINK_TEST_ECHO_OFFSET)) && return 1
   link_test_port_busy $((base + LINK_TEST_BEACON_OFFSET)) && return 1
   for (( i = 0; i < count; i++ )); do
     if link_test_port_busy $((base + i)) || link_test_port_busy $((base + LINK_TEST_FWD_OFFSET + i)); then
