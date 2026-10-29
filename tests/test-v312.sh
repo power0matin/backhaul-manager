@@ -36,6 +36,16 @@ dangling_export_is_rejected() (
 )
 assert_success "export refuses a dangling-symlink destination" dangling_export_is_rejected
 
+
+# Integration probes must avoid fixed ports and clean up even on errors/signals.
+integration_test="$ROOT_DIR/tests/test-linktest-integration.sh"
+grep -Fq "trap 'link_test_cleanup' EXIT" "$integration_test" || fail "integration test installs EXIT cleanup"
+grep -Fq 'ctrl=$(link_test_pick_base_port)' "$integration_test" || fail "integration test selects a free control port"
+grep -Fq 'LINK_TEST_ECHO_OFFSET' "$integration_test" || fail "integration test derives echo port"
+if grep -Eq '25010|25011|45099' "$integration_test"; then fail "integration test still contains hard-coded listener ports"; fi
+grep -Fq 'LINK_TEST_ECHO_OFFSET' "$ROOT_DIR/backhaul-manager.sh" || fail "port availability checks include echo listener"
+[[ ! -e "$ROOT_DIR/shell.yml" ]] || fail "obsolete root-level workflow remains beside .github/workflows/shell.yml"
+
 # Quick-start documentation must validate a downloaded file before execution.
 for readme in README.md README.fa.md; do
   grep -Fq 'tmp_script=' "$ROOT_DIR/$readme" || fail "$readme quick start uses a private temporary file"
