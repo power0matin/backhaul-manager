@@ -139,9 +139,22 @@ on_hangup() {
   exit 129
 }
 
+# Safety net for an unexpected shell exit while a transaction still owns
+# temporary processes/files. Signal handlers cover INT/TERM/HUP; EXIT also
+# covers errexit and other ordinary exits that bypass those handlers.
+on_exit() {
+  local exit_status=$?
+  trap - EXIT
+  if (( TRANSACTION_ACTIVE == 1 )); then
+    rollback_active_transaction "shell exit (status ${exit_status})" || true
+  fi
+  exit "${exit_status}"
+}
+
 trap on_interrupt INT
 trap on_terminate TERM
 trap on_hangup HUP
+trap on_exit EXIT
 
 usage() {
   cat <<EOF
