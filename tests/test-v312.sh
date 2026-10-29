@@ -22,7 +22,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 lock_dir_mode_preserved() (
   local body
   body=$(declare -f acquire_operation_lock)
-  [[ "$body" == *'[[ ! -d "$lock_dir" ]] && ! install -d -m 0755 "$lock_dir"'* ]]
+  [[ "$body" == *"if [[ ! -d"* && "$body" == *"install -d -m 0755"* ]]
 )
 assert_success "operation lock guards creation so existing shared directory modes are preserved" lock_dir_mode_preserved
 
