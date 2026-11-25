@@ -3138,16 +3138,53 @@ check_listening_port() {
   fi
 }
 
+process_owns_socket_inode() {
+  local pid="$1" inode="$2" proc_root="${3:-/proc}" fd_path target
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 && "$inode" =~ ^[0-9]+$ ]] || return 1
+  [[ -d "${proc_root}/${pid}/fd" ]] || return 1
+  for fd_path in "${proc_root}/${pid}/fd/"*; do
+    [[ -L "$fd_path" ]] || continue
+    target=$(readlink "$fd_path" 2>/dev/null) || continue
+    [[ "$target" == "socket:[${inode}]" ]] && return 0
+  done
+  return 1
+}
+
 check_listening_port_for_pid() {
-  local port="$1" protocol="${2:-tcp}" pid="$3"
+  local port="$1" protocol="${2:-tcp}" pid="$3" ss_output inode
+  [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]] || return 1
   [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
+
   if [[ "$protocol" == "udp" ]]; then
-    ss -H -lunp 2>/dev/null | awk -v p=":${port}" -v marker="pid=${pid}," \
-      '$4 ~ p"$" && index($0, marker) {found=1} END {exit !found}'
+    ss_output=$(ss -H -lunpe "sport = :${port}" 2>/dev/null) || return 1
   else
-    ss -H -ltnp 2>/dev/null | awk -v p=":${port}" -v marker="pid=${pid}," \
-      '$4 ~ p"$" && index($0, marker) {found=1} END {exit !found}'
+    ss_output=$(ss -H -ltnpe "sport = :${port}" 2>/dev/null) || return 1
   fi
+  [[ -n "$ss_output" ]] || return 1
+
+  # Prefer ss process metadata, but do not depend on iproute2 exposing it.
+  if grep -Eq "pid=${pid}([,)]|$)" <<< "$ss_output"; then
+    return 0
+  fi
+
+  # The socket inode is kernel-owned evidence of the actual descriptor owner.
+  while IFS= read -r inode; do
+    [[ "$inode" =~ ^[0-9]+$ ]] || continue
+    if process_owns_socket_inode "$pid" "$inode"; then
+      return 0
+    fi
+  done < <(
+    awk '{
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^ino:[0-9]+$/) {
+          sub(/^ino:/, "", $i)
+          print $i
+        }
+      }
+    }' <<< "$ss_output"
+  )
+
+  return 1
 }
 
 check_connected_peer_for_pid() {
