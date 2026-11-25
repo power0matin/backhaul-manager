@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly MANAGER_VERSION="3.2.2"
+readonly MANAGER_VERSION="3.2.3"
 readonly BACKHAUL_DIR="/opt/backhaul"
 readonly BACKHAUL_BIN="${BACKHAUL_DIR}/backhaul"
 readonly BASE_CONFIG_DIR="/root/backhaul"
@@ -1961,6 +1961,25 @@ client_control_channel_healthy() {
   '
 }
 
+# Server-side forwarding listeners are created only after the foreign client
+# completes its authenticated control-channel handshake. A server with no
+# paired client is healthy when its control listener is active.
+server_control_channel_healthy() {
+  local svc="$1" pid="$2"
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
+  journalctl -u "$svc" "_PID=${pid}" -n 1000 --no-pager -o cat 2>/dev/null |
+    awk '
+      /control channel successfully established/ {healthy=1; next}
+      /control channel established successfully/ {healthy=1; next}
+      /control channel closed/ {healthy=0; next}
+      /control channel has been closed/ {healthy=0; next}
+      /control channel not found/ {healthy=0; next}
+      /new control channel requested/ {healthy=0; next}
+      /restarting server/ {healthy=0; next}
+      END {exit !healthy}
+    '
+}
+
 config_port_rules_from_file() {
   local config_file="$1"
   [[ -r "$config_file" ]] || return 1
@@ -2050,9 +2069,13 @@ service_health_probe() {
     port="${endpoint##*:}"; port="${port%]}"
     protocol=$(control_protocol)
     check_listening_port_for_pid "$port" "$protocol" "$pid" || return 1
-    local accept_udp
-    accept_udp=$(config_value_from_file "$config_file" accept_udp 2>/dev/null || printf 'false')
-    server_forwarding_listeners_healthy "$config_file" "$pid" "$transport" "$accept_udp"
+
+    # Forwarding listeners are created only after the authenticated client handshake.
+    if server_control_channel_healthy "$svc" "$pid"; then
+      accept_udp=$(config_value_from_file "$config_file" accept_udp 2>/dev/null || printf 'false')
+      server_forwarding_listeners_healthy "$config_file" "$pid" "$transport" "$accept_udp" || return 1
+    fi
+    return 0
   elif [[ "$role" == "client" ]]; then
     endpoint=$(config_value_from_file "$config_file" remote_addr 2>/dev/null || true)
     validate_endpoint "$endpoint" || return 1
@@ -3024,6 +3047,7 @@ service_is_active() {
 }
 
 start_and_verify_service() {
+  local role pid
   if ! systemctl daemon-reload; then
     err "systemd daemon-reload failed; ${SERVICE_NAME} was not restarted."
     return 1
@@ -3038,10 +3062,21 @@ start_and_verify_service() {
     return 1
   fi
   if ! verify_service_health "$SERVICE_NAME" "$CONFIG_FILE" 20; then
-    err "${SERVICE_NAME} started but the tunnel did not become healthy."
+    err "${SERVICE_NAME} started but the configured service health checks did not pass."
     return 1
   fi
-  ok "${SERVICE_NAME} is active and tunnel health is verified."
+  role=$(config_role_from_file "$CONFIG_FILE")
+  if [[ "$role" == "server" ]]; then
+    pid=$(service_main_pid "$SERVICE_NAME") || return 1
+    ok "${SERVICE_NAME} is active and its control listener is healthy."
+    if server_control_channel_healthy "$SERVICE_NAME" "$pid"; then
+      ok "The foreign client is connected and forwarding listeners are healthy."
+    else
+      info "Waiting for the foreign client; forwarding listeners are created after its control channel connects."
+    fi
+  else
+    ok "${SERVICE_NAME} is active and tunnel health is verified."
+  fi
 }
 
 rollback_install() {
@@ -3360,15 +3395,22 @@ configure_server() {
 
   printf '\n%bListening-port check:%b\n' "$C_BOLD" "$C_RESET"
   if check_listening_port "$control_port" "$(control_protocol)"; then ok "Control port ${control_port}/$(control_protocol) is listening."; else warn "Control port ${control_port}/$(control_protocol) is not listening yet."; fi
-  if [[ "$CONFIG_MODE" == "standard" ]]; then
-    for p in "${PARSED_PORTS[@]}"; do
-      if check_listening_port "$p" "$protocol"; then ok "Tunnel port ${p}/${protocol} is listening."; else warn "Tunnel port ${p}/${protocol} is not listening yet."; fi
-    done
-    firewall_hint "$(control_protocol)" "$control_port"
-    firewall_hint "$protocol" "${PARSED_PORTS[@]}"
+  local server_pid
+  server_pid=$(service_main_pid "$SERVICE_NAME") || server_pid=0
+  if server_control_channel_healthy "$SERVICE_NAME" "$server_pid"; then
+    if [[ "$CONFIG_MODE" == "standard" ]]; then
+      for p in "${PARSED_PORTS[@]}"; do
+        if check_listening_port "$p" "$protocol"; then ok "Tunnel port ${p}/${protocol} is listening."; else warn "Tunnel port ${p}/${protocol} is not listening yet."; fi
+      done
+    else
+      info "Advanced port rules are active; use Diagnostics for post-start rule checks."
+    fi
   else
-    info "Advanced port rules are active; use Diagnostics for post-start rule checks."
-    firewall_hint "$(control_protocol)" "$control_port"
+    info "Forwarding listeners will be created after the foreign client establishes its control channel."
+  fi
+  firewall_hint "$(control_protocol)" "$control_port"
+  if [[ "$CONFIG_MODE" == "standard" ]]; then
+    firewall_hint "$protocol" "${PARSED_PORTS[@]}"
   fi
   if ! save_backhaul_source "$source_repo"; then
     err "Configuration succeeded but source state could not be persisted; rolling back for consistency."

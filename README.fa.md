@@ -97,7 +97,7 @@ Manager ابزارهای اجباری را بررسی می‌کند و در صو
 این دستور را در یک shell با دسترسی `root` اجرا کنید. دستور، Release ثابت `v3.2.2` را دریافت می‌کند و منوی تعاملی Backhaul Manager را باز می‌کند:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.3/backhaul-manager.sh)
 ```
 
 اگر با کاربر عادی وارد شده‌اید، ابتدا یک shell با دسترسی root باز کنید:
@@ -125,7 +125,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager
 برای دانلود و بررسی Release ثابت پیش از اجرا:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh -o backhaul-manager.sh
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.3/backhaul-manager.sh -o backhaul-manager.sh
 bash -n backhaul-manager.sh
 less backhaul-manager.sh
 bash ./backhaul-manager.sh
@@ -354,10 +354,10 @@ sudo ./backhaul-manager.sh --follow-logs
 
 ```bash
 # بررسی syntax زبان Bash مطابق CI
-bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh
+bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-v323.sh tests/test-linktest.sh
 
 # تحلیل ایستا مطابق CI
-shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh tests/test-linktest-integration.sh
+shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-v323.sh tests/test-linktest.sh tests/test-linktest-integration.sh
 shellcheck --exclude=SC2317,SC2329,SC2034 tests/test.sh
 
 # مجموعه تست‌های regression و failure-injection که CI اجرا می‌کند
@@ -366,6 +366,7 @@ bash tests/test.sh
 bash tests/test-v311.sh
 bash tests/test-v312.sh
 bash tests/test-v322.sh
+bash tests/test-v323.sh
 bash tests/test-linktest.sh
 ```
 

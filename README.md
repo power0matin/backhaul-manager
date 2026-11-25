@@ -107,7 +107,7 @@ The manager checks required commands and exits with an error if a mandatory depe
 Run this command from a root shell. It downloads the fixed `v3.2.2` release and opens the interactive Backhaul Manager menu:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.3/backhaul-manager.sh)
 ```
 
 If you are logged in as a regular user, switch to a root login shell first:
@@ -135,7 +135,7 @@ The `main` branch is not pinned to a release and can contain unreleased changes.
 To download and inspect the pinned release before execution:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh -o backhaul-manager.sh
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.3/backhaul-manager.sh -o backhaul-manager.sh
 bash -n backhaul-manager.sh
 less backhaul-manager.sh
 bash ./backhaul-manager.sh
@@ -364,10 +364,10 @@ Run these checks from the repository root. ShellCheck is a separate prerequisite
 
 ```bash
 # Bash syntax checks used by CI
-bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh
+bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-v323.sh tests/test-linktest.sh
 
 # Static analysis used by CI
-shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh tests/test-linktest-integration.sh
+shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-v323.sh tests/test-linktest.sh tests/test-linktest-integration.sh
 shellcheck --exclude=SC2317,SC2329,SC2034 tests/test.sh
 
 # Regression and failure-injection suites used by CI
@@ -376,6 +376,7 @@ bash tests/test.sh
 bash tests/test-v311.sh
 bash tests/test-v312.sh
 bash tests/test-v322.sh
+bash tests/test-v323.sh
 bash tests/test-linktest.sh
 ```
 

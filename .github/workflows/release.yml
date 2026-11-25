@@ -21,8 +21,8 @@ jobs:
             const run = context.payload.workflow_run;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const expectedVersion = "3.2.2";
-            const expectedSubject = "chore(release): prepare v3.2.2";
+            const expectedVersion = "3.2.3";
+            const expectedSubject = "chore(release): prepare v3.2.3";
 
             if (run.head_branch !== "main") {
               core.notice("Skipping release: CI did not run for main.");
@@ -36,7 +36,7 @@ jobs:
             });
             const subject = commit.commit.message.split(String.fromCharCode(10))[0];
             if (subject !== expectedSubject) {
-              core.notice("Skipping release: this commit is not the v3.2.2 release candidate.");
+              core.notice("Skipping release: this commit is not the v3.2.3 release candidate.");
               return;
             }
 

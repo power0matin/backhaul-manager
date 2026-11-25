@@ -86,10 +86,11 @@ if grep -Eq '25010|25011|45099' "$integration_test"; then fail "integration test
 grep -Fq 'LINK_TEST_ECHO_OFFSET' "$ROOT_DIR/backhaul-manager.sh" || fail "port availability checks include echo listener"
 [[ ! -e "$ROOT_DIR/shell.yml" ]] || fail "obsolete root-level workflow remains beside .github/workflows/shell.yml"
 
-# Quick-start documentation must validate a downloaded file before execution.
+# Quick-start documentation offers a pinned release command and an explicit development command.
 for readme in README.md README.fa.md; do
-  grep -Fq 'tmp_script=' "$ROOT_DIR/$readme" || fail "$readme quick start uses a private temporary file"
-  if grep -Fq 'bash <(curl -fsSL' "$ROOT_DIR/$readme"; then fail "$readme still executes process-substitution downloads"; fi
+  grep -Fq 'https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.3/backhaul-manager.sh' "$ROOT_DIR/$readme" || fail "$readme is missing the pinned v3.2.3 command"
+  grep -Fq 'https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh' "$ROOT_DIR/$readme" || fail "$readme is missing the development command"
+  grep -Fq 'bash <(curl -fsSL' "$ROOT_DIR/$readme" || fail "$readme is missing the one-command quick start"
   if grep -Fq 'curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh | sudo bash' "$ROOT_DIR/$readme"; then fail "$readme still pipes the download directly into sudo bash"; fi
 done
 pass

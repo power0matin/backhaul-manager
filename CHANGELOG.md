@@ -14,7 +14,7 @@ All notable changes to **Backhaul Manager** are documented in this file.
 - `tests/test-linktest.sh` (CI) and `tests/test-linktest-integration.sh` (optional, real binaries, loopback only).
 - Manager v3.1.0 operation lock (`flock`) so concurrent interactive/CLI writers cannot mutate the shared Backhaul state at the same time.
 - Explicit current-source recording (`--set-source` and **Backhaul maintenance → Record current source**) for installations whose existing binary provenance is not recorded.
-- PID-aware tunnel health verification: server health requires the configured listener to belong to the current service PID, while client health tracks the live peer/control-channel state instead of accepting `systemctl active` alone.
+- PID-aware tunnel health verification: server health first verifies its control listener and waits for an authenticated client before requiring configured forwarding listeners; client health tracks the live peer/control-channel state instead of accepting `systemctl active` alone.
 - Schema-2 backups that include detected root-level legacy configs, their restorable service state, and TLS material in addition to managed profiles.
 - Failure-injection regressions for systemd enable/stop failures, effective `ExecStart` overrides, transaction rollback, stale client control channels, TOML comments/literal strings, and managed+legacy backup validation.
 - Automatic discovery of valid root-level legacy Backhaul TOML configs (for example `config-2087.toml`) plus explicit, rollback-aware adoption into native named profiles.
@@ -115,6 +115,17 @@ All notable changes to **Backhaul Manager** are documented in this file.
 - Config, info, backup directory, and run-log permissions are restrictive by default.
 - User input that reaches TOML or release URLs is validated/escaped before use.
 
+## [3.2.3] - 2026-11-25
+
+### Fixed
+
+- Server setup no longer rolls back when the foreign client has not connected yet. Backhaul creates server-side forwarding listeners only after the authenticated control-channel handshake; the Manager now validates the control listener first and checks forwarding listeners only while that channel is established.
+- Server startup and post-install port checks now explain that forwarding listeners are pending until the foreign client connects, instead of reporting them as failed during a fresh server-only setup.
+
+### Tests
+
+- Added v3.2.3 regressions for fresh servers without a client, TCP/TCPMux and WebSocket handshake log formats, forwarding listener checks after client connection, and state reset after disconnect/restart.
+
 ## [3.2.2] - 2026-11-25
 
 ### Fixed
@@ -156,5 +167,6 @@ Initial public release.
 See the [Roadmap](./README.md#roadmap) for `tcp`, `tcpmux`, `ws`/`wss`, `udp` transport support and a non-interactive/flag-driven mode.
 
 [1.0.0]: https://github.com/power0matin/backhaul-manager/releases/tag/v1.0.0
+[3.2.3]: https://github.com/power0matin/backhaul-manager/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/power0matin/backhaul-manager/compare/v1.0.0...v3.2.2
-[Unreleased]: https://github.com/power0matin/backhaul-manager/compare/v3.2.2...HEAD
+[Unreleased]: https://github.com/power0matin/backhaul-manager/compare/v3.2.3...HEAD
