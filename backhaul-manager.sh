@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly MANAGER_VERSION="3.2.1"
+readonly MANAGER_VERSION="3.2.2"
 readonly BACKHAUL_DIR="/opt/backhaul"
 readonly BACKHAUL_BIN="${BACKHAUL_DIR}/backhaul"
 readonly BASE_CONFIG_DIR="/root/backhaul"
@@ -3151,7 +3151,7 @@ process_owns_socket_inode() {
 }
 
 check_listening_port_for_pid() {
-  local port="$1" protocol="${2:-tcp}" pid="$3" ss_output inode
+  local port="$1" protocol="${2:-tcp}" pid="$3" proc_root="${4:-/proc}" ss_output inode
   [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]] || return 1
   [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 1
 
@@ -3170,7 +3170,7 @@ check_listening_port_for_pid() {
   # The socket inode is kernel-owned evidence of the actual descriptor owner.
   while IFS= read -r inode; do
     [[ "$inode" =~ ^[0-9]+$ ]] || continue
-    if process_owns_socket_inode "$pid" "$inode"; then
+    if process_owns_socket_inode "$pid" "$inode" "$proc_root"; then
       return 0
     fi
   done < <(

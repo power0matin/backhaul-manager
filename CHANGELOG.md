@@ -115,6 +115,17 @@ All notable changes to **Backhaul Manager** are documented in this file.
 - Config, info, backup directory, and run-log permissions are restrictive by default.
 - User input that reaches TOML or release URLs is validated/escaped before use.
 
+## [3.2.2] - 2026-11-25
+
+### Fixed
+
+- Listener health checks no longer depend solely on the process metadata format emitted by `ss -p`. When that metadata is missing, the manager verifies the listening socket inode against the active Backhaul PID's `/proc/<pid>/fd` entries.
+- Listener checks keep the requested port and protocol filter and reject sockets that are not owned by the expected process, including TCP and UDP forwarding listeners.
+
+### Tests
+
+- Added regression coverage for exact PID metadata, TCP/UDP socket-inode fallback, mismatched owners, PID-prefix collisions, failed or empty `ss` output, and invalid inputs.
+
 ## [1.0.0] - 2026-08-04
 
 Initial public release.
@@ -145,4 +156,5 @@ Initial public release.
 See the [Roadmap](./README.md#roadmap) for `tcp`, `tcpmux`, `ws`/`wss`, `udp` transport support and a non-interactive/flag-driven mode.
 
 [1.0.0]: https://github.com/power0matin/backhaul-manager/releases/tag/v1.0.0
-[Unreleased]: https://github.com/power0matin/backhaul-manager/compare/v1.0.0...HEAD
+[3.2.2]: https://github.com/power0matin/backhaul-manager/compare/v1.0.0...v3.2.2
+[Unreleased]: https://github.com/power0matin/backhaul-manager/compare/v3.2.2...HEAD

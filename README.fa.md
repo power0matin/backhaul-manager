@@ -25,11 +25,11 @@
   <a href="./imgs/preview_v3.2.1.png">
     <img
       src="./imgs/preview_v3.2.1.png"
-      alt="پیش‌نمایش رابط کاربری Backhaul Manager نسخه 3.2.1"
+      alt="پیش‌نمایش رابط کاربری Backhaul Manager"
       width="360"
     />
   </a>
-  <p><sub>پیش‌نمایش رابط کاربری Backhaul Manager نسخه 3.2.1 · برای مشاهده در اندازه کامل روی تصویر کلیک کنید</sub></p>
+  <p><sub>پیش‌نمایش رابط کاربری Backhaul Manager · برای مشاهده در اندازه کامل روی تصویر کلیک کنید</sub></p>
 </div>
 
 Backhaul Manager هر دو سمت یک تانل معکوس Backhaul را تنظیم و مدیریت می‌کند: سرور سمت ایران و کلاینت سمت خارج. این ابزار نصب مرحله‌به‌مرحله، Profileهای نام‌گذاری‌شده، مهاجرت بین sourceها، بکاپ اعتبارسنجی‌شده، بررسی سلامت، rollback و عملیات خط فرمان را به binary اصلی Backhaul اضافه می‌کند.
@@ -354,10 +354,10 @@ sudo ./backhaul-manager.sh --follow-logs
 
 ```bash
 # بررسی syntax زبان Bash مطابق CI
-bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-linktest.sh
+bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh
 
 # تحلیل ایستا مطابق CI
-shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-linktest.sh tests/test-linktest-integration.sh
+shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh tests/test-linktest-integration.sh
 shellcheck --exclude=SC2317,SC2329,SC2034 tests/test.sh
 
 # مجموعه تست‌های regression و failure-injection که CI اجرا می‌کند
@@ -365,6 +365,7 @@ bash test.sh
 bash tests/test.sh
 bash tests/test-v311.sh
 bash tests/test-v312.sh
+bash tests/test-v322.sh
 bash tests/test-linktest.sh
 ```
 

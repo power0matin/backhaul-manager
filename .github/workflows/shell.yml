@@ -25,6 +25,7 @@ jobs:
             tests/test.sh \
             tests/test-v311.sh \
             tests/test-v312.sh \
+            tests/test-v322.sh \
             tests/test-linktest.sh
           do
             bash -n "$f"
@@ -37,6 +38,7 @@ jobs:
             test.sh \
             tests/test-v311.sh \
             tests/test-v312.sh \
+            tests/test-v322.sh \
             tests/test-linktest.sh \
             tests/test-linktest-integration.sh
 
@@ -51,6 +53,7 @@ jobs:
             tests/test.sh \
             tests/test-v311.sh \
             tests/test-v312.sh \
+            tests/test-v322.sh \
             tests/test-linktest.sh
           do
             echo "::group::${suite}"

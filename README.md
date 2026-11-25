@@ -35,11 +35,11 @@
   <a href="./imgs/preview_v3.2.1.png">
     <img
       src="./imgs/preview_v3.2.1.png"
-      alt="Backhaul Manager v3.2.1 — interface preview"
+      alt="Backhaul Manager — interface preview"
       width="360"
     />
   </a>
-  <p><sub>Backhaul Manager v3.2.1 · Interface preview · Click to view full size</sub></p>
+  <p><sub>Backhaul Manager Interface preview · Click to view full size</sub></p>
 </div>
 
 Backhaul Manager configures and maintains both sides of a Backhaul reverse tunnel: the Iran-side server and the foreign-side client. It adds guided setup, named profiles, source migration, validated backups, health checks, rollback, and command-line operations to the underlying Backhaul binary.
@@ -364,10 +364,10 @@ Run these checks from the repository root. ShellCheck is a separate prerequisite
 
 ```bash
 # Bash syntax checks used by CI
-bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-linktest.sh
+bash -n backhaul-manager.sh test.sh tests/test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh
 
 # Static analysis used by CI
-shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-linktest.sh tests/test-linktest-integration.sh
+shellcheck backhaul-manager.sh test.sh tests/test-v311.sh tests/test-v312.sh tests/test-v322.sh tests/test-linktest.sh tests/test-linktest-integration.sh
 shellcheck --exclude=SC2317,SC2329,SC2034 tests/test.sh
 
 # Regression and failure-injection suites used by CI
@@ -375,6 +375,7 @@ bash test.sh
 bash tests/test.sh
 bash tests/test-v311.sh
 bash tests/test-v312.sh
+bash tests/test-v322.sh
 bash tests/test-linktest.sh
 ```
 
