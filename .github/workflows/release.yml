@@ -1,0 +1,87 @@
+name: Publish release
+
+on:
+  workflow_run:
+    workflows: ["Shell checks"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the verified release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const expectedVersion = "3.2.2";
+            const expectedSubject = "chore(release): prepare v3.2.2";
+
+            if (run.head_branch !== "main") {
+              core.notice("Skipping release: CI did not run for main.");
+              return;
+            }
+
+            const { data: commit } = await github.rest.repos.getCommit({
+              owner,
+              repo,
+              ref: run.head_sha,
+            });
+            const subject = commit.commit.message.split(String.fromCharCode(10))[0];
+            if (subject !== expectedSubject) {
+              core.notice("Skipping release: this commit is not the v3.2.2 release candidate.");
+              return;
+            }
+
+            async function readTextFile(path) {
+              const { data } = await github.rest.repos.getContent({ owner, repo, path, ref: run.head_sha });
+              if (Array.isArray(data) || data.type !== "file" || !data.content) {
+                throw new Error(`Expected a text file at ${path}`);
+              }
+              return Buffer.from(data.content, "base64").toString("utf8");
+            }
+
+            const manager = await readTextFile("backhaul-manager.sh");
+            const versionLine = manager.split(String.fromCharCode(10)).find(line => line.startsWith("readonly MANAGER_VERSION="));
+            const versionMatch = versionLine && versionLine.match(/"([^"]+)"/);
+            if (!versionMatch || versionMatch[1] !== expectedVersion) {
+              throw new Error("Manager version does not match the approved release version.");
+            }
+
+            const changelog = await readTextFile("CHANGELOG.md");
+            const marker = `## [${expectedVersion}] - `;
+            const sectionStart = changelog.indexOf(marker);
+            if (sectionStart < 0) throw new Error("The matching release section is missing from CHANGELOG.md.");
+            const headingEnd = changelog.indexOf(String.fromCharCode(10), sectionStart);
+            const nextSection = changelog.indexOf(String.fromCharCode(10) + "## [", headingEnd + 1);
+            const section = changelog.slice(headingEnd + 1, nextSection < 0 ? undefined : nextSection).trim();
+            if (!section || !section.includes("### ")) throw new Error("The release notes section is empty or malformed.");
+
+            const tag = `v${expectedVersion}`;
+            try {
+              const { data: existing } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.notice(`Release ${tag} already exists (#${existing.id}); leaving it unchanged.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const { data: release } = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: run.head_sha,
+              name: tag,
+              body: section,
+              draft: false,
+              prerelease: false,
+              generate_release_notes: false,
+            });
+            core.notice(`Published ${tag}: ${release.html_url}`);

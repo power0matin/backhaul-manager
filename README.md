@@ -32,14 +32,14 @@
 </div>
 
 <div align="center">
-  <a href="./imgs/preview_v3.2.1.png">
+  <a href="./imgs/preview_v3.2.2.svg">
     <img
-      src="./imgs/preview_v3.2.1.png"
-      alt="Backhaul Manager — interface preview"
+      src="./imgs/preview_v3.2.2.svg"
+      alt="Backhaul Manager v3.2.2 — interface preview"
       width="360"
     />
   </a>
-  <p><sub>Backhaul Manager Interface preview · Click to view full size</sub></p>
+  <p><sub>Backhaul Manager v3.2.2 · Interface preview · Click to view full size</sub></p>
 </div>
 
 Backhaul Manager configures and maintains both sides of a Backhaul reverse tunnel: the Iran-side server and the foreign-side client. It adds guided setup, named profiles, source migration, validated backups, health checks, rollback, and command-line operations to the underlying Backhaul binary.
