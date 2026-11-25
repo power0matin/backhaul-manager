@@ -16,7 +16,7 @@
 
 <p>
   <a href="https://github.com/power0matin/backhaul-manager/actions/workflows/shell.yml"><img src="https://github.com/power0matin/backhaul-manager/actions/workflows/shell.yml/badge.svg?branch=main" alt="Shell checks"></a>
-  <a href="https://github.com/power0matin/backhaul-manager/blob/main/LICENSE"><img src="https://img.shields.io/github/license/power0matin/backhaul-manager?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/power0matin/backhaul-manager/releases/latest"><img src="https://img.shields.io/github/v/release/power0matin/backhaul-manager?display_name=tag&amp;style=flat-square" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/shell-Bash%205%2B-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash 5 or newer">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20systemd-lightgrey?style=flat-square" alt="Linux and systemd">
   <img src="https://img.shields.io/badge/transports-7-informational?style=flat-square" alt="Seven transports">
@@ -46,7 +46,7 @@ Backhaul Manager configures and maintains both sides of a Backhaul reverse tunne
 
 It supports [`power0matin/Backhaul`](https://github.com/power0matin/Backhaul) and the [`Musixal/Backhaul`](https://github.com/Musixal/Backhaul) upstream. It can be used alongside Xray, V2Ray, Marzban, 3x-ui/Sanaei, Hiddify, and similar software, but **it does not configure those applications themselves**.
 
-> **Safety note:** The manager requires root privileges for installation and service-management operations. Review the script before running downloaded code as root. The quick-install command downloads the current `main` version, not a pinned or cryptographically signed release. The manager never changes firewall rules automatically.
+> **Safety note:** Root privileges are required for installation and service-management operations. The recommended quick-start command is pinned to release `v3.2.2`, but release scripts are not cryptographically signed; review downloaded code before running it as root. The optional `main` command is unpinned and may contain unreleased changes. The manager never changes firewall rules automatically.
 
 ## Contents
 
@@ -64,6 +64,7 @@ It supports [`power0matin/Backhaul`](https://github.com/power0matin/Backhaul) an
 - [Development and tests](#development-and-tests)
 - [Roadmap](#roadmap)
 - [Contributing and license](#contributing-and-license)
+- [Contact](#contact)
 
 ## Features
 
@@ -101,49 +102,48 @@ The manager checks required commands and exits with an error if a mandatory depe
 
 ## Quick start
 
-### Fastest: one-command launch
+### One-command launch (recommended)
 
-These commands start the interactive manager directly from the current `main` branch. They download and execute the script immediately, without a review step. To inspect the code before running it with root privileges, use the safer method below.
-
-If you are already logged in as `root`:
+Run this command from a root shell. It downloads the fixed `v3.2.2` release and opens the interactive Backhaul Manager menu:
 
 ```bash
-tmp_script="$(mktemp)" || exit 1
-trap 'rm -f -- "$tmp_script"' EXIT
-if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
-  echo "Download failed or script is incomplete; refusing to run it." >&2
-  exit 1
-fi
-bash "$tmp_script"
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh)
 ```
 
-For a non-root shell:
+If you are logged in as a regular user, switch to a root login shell first:
 
 ```bash
-tmp_script="$(mktemp)" || exit 1
-trap 'rm -f -- "$tmp_script"' EXIT
-if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
-  echo "Download failed or script is incomplete; refusing to run it." >&2
-  exit 1
-fi
-sudo bash "$tmp_script"
+sudo -i
 ```
 
-Both commands download to a private temporary file and run a Bash syntax check before execution. A failed or truncated transfer is rejected, and the temporary file is removed when the command exits.
+The command starts the Manager menu; it does **not** automatically install Backhaul or configure a tunnel. Choose **1** to configure the Iran-side server or **2** to configure the foreign-side client. Use menu option **11** to install or update the optional global `backhaul-manager` command.
 
-### Safer: download, review, then run
+> This command is pinned to `v3.2.2` and will not automatically move to later releases. It executes the downloaded script immediately without a local review or syntax-check step. The release is not cryptographically signed, so inspect the script first if you do not fully trust the source.
 
-Download the script and inspect it before execution:
+### Latest development version
+
+To try the latest code from `main` instead of the stable release, run this from a root shell:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+```
+
+The `main` branch is not pinned to a release and can contain unreleased changes. Prefer the versioned command above for production systems.
+
+### Review before running
+
+To download and inspect the pinned release before execution:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh -o backhaul-manager.sh
+bash -n backhaul-manager.sh
 less backhaul-manager.sh
-sudo bash ./backhaul-manager.sh
+bash ./backhaul-manager.sh
 ```
 
-The last command starts the interactive manager. If you are already logged in as `root`, omit `sudo`.
+Run the final command as `root`; from a regular shell, use `sudo bash ./backhaul-manager.sh`. The `bash -n` step checks syntax only and does not establish that the code is safe.
 
-Both launch methods use the current `main` version, not a pinned or cryptographically signed release. To install or update the optional global `backhaul-manager` command after reviewing the script, use **Manager install / update** in the interactive menu or `--self-update`. The self-update mechanism performs syntax/version checks and rejects downgrades, but it is not a cryptographically signed update channel.
+After launching the Manager, use **Manager install / update** (menu option **11**) or `--self-update` to install/update the optional global command. Self-update validates syntax and version and rejects downgrades, but it is not a cryptographically signed update channel.
 
 ## Setup workflow
 
@@ -421,7 +421,6 @@ This project is licensed under the [MIT License](./LICENSE). Backhaul itself is 
   <sub>Your support keeps the project alive and helps others find it.</sub>
 </p>
 
-<!-- Copy-paste in your Readme.md file -->
 <p align="center">
   <a href="https://next.ossinsight.io/widgets/official/analyze-repo-stars-history?repo_id=1322866555" target="_blank" style="display: block" align="center">
     <picture>

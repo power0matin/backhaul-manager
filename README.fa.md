@@ -6,7 +6,7 @@
 
 <p>
   <a href="https://github.com/power0matin/backhaul-manager/actions/workflows/shell.yml"><img src="https://github.com/power0matin/backhaul-manager/actions/workflows/shell.yml/badge.svg?branch=main" alt="Shell checks"></a>
-  <a href="https://github.com/power0matin/backhaul-manager/blob/main/LICENSE"><img src="https://img.shields.io/github/license/power0matin/backhaul-manager?style=flat-square" alt="مجوز MIT"></a>
+  <a href="https://github.com/power0matin/backhaul-manager/releases/latest"><img src="https://img.shields.io/github/v/release/power0matin/backhaul-manager?display_name=tag&amp;style=flat-square" alt="آخرین نسخه منتشرشده"></a>
   <img src="https://img.shields.io/badge/shell-Bash%205%2B-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash 5 یا جدیدتر">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20systemd-lightgrey?style=flat-square" alt="Linux و systemd">
   <img src="https://img.shields.io/badge/transports-7-informational?style=flat-square" alt="هفت transport">
@@ -36,7 +36,7 @@ Backhaul Manager هر دو سمت یک تانل معکوس Backhaul را تنظ�
 
 این پروژه از [`power0matin/Backhaul`](https://github.com/power0matin/Backhaul) و نسخه بالادستی [`Musixal/Backhaul`](https://github.com/Musixal/Backhaul) پشتیبانی می‌کند. می‌توان آن را در کنار Xray، V2Ray، Marzban، 3x-ui/Sanaei، Hiddify و ابزارهای مشابه به کار برد، اما **خود این Manager تنظیمات آن برنامه‌ها را انجام نمی‌دهد**.
 
-> **نکته امنیتی:** برای نصب و مدیریت سرویس به دسترسی root نیاز است. پیش از اجرای کد دانلودشده با دسترسی root، اسکریپت را بررسی کنید. دستور نصب سریع نسخه فعلی شاخه `main` را می‌گیرد؛ این مسیر یک Release ثابت یا کانال به‌روزرسانی دارای امضای رمزنگاری‌شده نیست. Manager هیچ قانون فایروالی را خودکار تغییر نمی‌دهد.
+> **نکته امنیتی:** برای نصب و مدیریت سرویس به دسترسی root نیاز است. دستور پیشنهادی شروع سریع به Release ثابت `v3.2.2` متصل است، اما اسکریپت‌های Release امضای رمزنگاری‌شده ندارند؛ پیش از اجرای کد دانلودشده با دسترسی root، آن را بررسی کنید. دستور اختیاری شاخه `main` به نسخه مشخصی پین نشده و ممکن است تغییرات منتشرنشده داشته باشد. Manager هیچ قانون فایروالی را خودکار تغییر نمی‌دهد.
 
 ## فهرست
 
@@ -54,6 +54,7 @@ Backhaul Manager هر دو سمت یک تانل معکوس Backhaul را تنظ�
 - [توسعه و تست](#توسعه-و-تست)
 - [نقشه راه](#نقشه-راه)
 - [مشارکت و مجوز](#مشارکت-و-مجوز)
+- [ارتباط](#ارتباط)
 
 ## امکانات
 
@@ -91,49 +92,48 @@ Manager ابزارهای اجباری را بررسی می‌کند و در صو
 
 ## شروع سریع
 
-### سریع‌ترین روش: اجرای یک‌دستوری
+### اجرای یک‌دستوری (پیشنهادی)
 
-این دستورها منوی تعاملی Manager را مستقیماً از نسخه فعلی شاخه `main` اجرا می‌کنند؛ یعنی اسکریپت پیش از اجرا بازبینی نمی‌شود. اگر می‌خواهید قبل از اجرا با دسترسی `root` کد را بررسی کنید، روش بعدی را انتخاب کنید.
-
-اگر با کاربر `root` وارد شده‌اید:
+این دستور را در یک shell با دسترسی `root` اجرا کنید. دستور، Release ثابت `v3.2.2` را دریافت می‌کند و منوی تعاملی Backhaul Manager را باز می‌کند:
 
 ```bash
-tmp_script="$(mktemp)" || exit 1
-trap 'rm -f -- "$tmp_script"' EXIT
-if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
-  echo "دانلود ناموفق بود یا اسکریپت ناقص است؛ اجرا انجام نمی‌شود." >&2
-  exit 1
-fi
-bash "$tmp_script"
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh)
 ```
 
-برای کاربر عادی:
+اگر با کاربر عادی وارد شده‌اید، ابتدا یک shell با دسترسی root باز کنید:
 
 ```bash
-tmp_script="$(mktemp)" || exit 1
-trap 'rm -f -- "$tmp_script"' EXIT
-if ! curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o "$tmp_script" || [[ ! -s "$tmp_script" ]] || ! bash -n "$tmp_script"; then
-  echo "دانلود ناموفق بود یا اسکریپت ناقص است؛ اجرا انجام نمی‌شود." >&2
-  exit 1
-fi
-sudo bash "$tmp_script"
+sudo -i
 ```
 
-هر دو دستور ابتدا فایل را در یک مسیر موقت خصوصی دانلود و با `bash -n` از نظر syntax بررسی می‌کنند؛ اگر دانلود ناموفق یا فایل ناقص باشد اجرا نمی‌شود. فایل موقت هنگام خروج دستور پاک می‌شود.
+این دستور فقط منوی Manager را اجرا می‌کند؛ **Backhaul را خودکار نصب نمی‌کند و تانلی هم پیکربندی نمی‌کند**. برای تنظیم سمت ایران گزینه **1** و برای تنظیم کلاینت سمت خارج گزینه **2** را انتخاب کنید. گزینه **11** برای نصب یا به‌روزرسانی دستور سراسری اختیاری `backhaul-manager` است.
 
-### روش امن‌تر: دانلود، بررسی و سپس اجرا
+> این دستور به نسخه `v3.2.2` پین شده و به‌صورت خودکار به Releaseهای بعدی تغییر نمی‌کند. اسکریپت دانلودشده بلافاصله اجرا می‌شود و پیش از آن بررسی محلی یا syntax check انجام نمی‌شود. Release امضای رمزنگاری‌شده ندارد؛ اگر به منبع کاملاً اعتماد ندارید، ابتدا اسکریپت را بررسی کنید.
 
-ابتدا اسکریپت را دانلود و پیش از اجرا بررسی کنید:
+### اجرای آخرین نسخه در حال توسعه
+
+برای دریافت آخرین کد شاخه `main` به‌جای نسخه پایدار، در shell با دسترسی root اجرا کنید:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh -o backhaul-manager.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/main/backhaul-manager.sh)
+```
+
+شاخه `main` به Release مشخصی پین نشده و ممکن است شامل تغییرات منتشرنشده باشد. برای سرور عملیاتی، دستور نسخه‌دار بخش قبل انتخاب مناسب‌تری است.
+
+### دانلود، بررسی و سپس اجرا
+
+برای دانلود و بررسی Release ثابت پیش از اجرا:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/power0matin/backhaul-manager/v3.2.2/backhaul-manager.sh -o backhaul-manager.sh
+bash -n backhaul-manager.sh
 less backhaul-manager.sh
-sudo bash ./backhaul-manager.sh
+bash ./backhaul-manager.sh
 ```
 
-دستور آخر منوی تعاملی را اجرا می‌کند. اگر از قبل با کاربر `root` وارد شده‌اید، `sudo` لازم نیست.
+دستور آخر را با کاربر `root` اجرا کنید؛ از shell عادی می‌توانید از `sudo bash ./backhaul-manager.sh` استفاده کنید. دستور `bash -n` فقط syntax را بررسی می‌کند و به‌تنهایی امن‌بودن کد را تأیید نمی‌کند.
 
-هر دو روش، نسخه فعلی شاخه `main` را اجرا می‌کنند؛ این نسخه به یک release ثابت پین نشده و کانال دانلود نیز امضای رمزنگاری‌شده ندارد. برای نصب یا به‌روزرسانی دستور سراسری اختیاری `backhaul-manager` پس از بررسی اسکریپت، گزینه **Manager install / update** یا `--self-update` را اجرا کنید. self-update، syntax و version را بررسی و downgrade را رد می‌کند؛ اما کانال به‌روزرسانی دارای امضای رمزنگاری‌شده نیست.
+پس از اجرای Manager، برای نصب یا به‌روزرسانی دستور سراسری اختیاری، گزینه **Manager install / update** (گزینه **11** منو) یا `--self-update` را اجرا کنید. self-update، syntax و version را بررسی و downgrade را رد می‌کند، اما کانال به‌روزرسانی امضای رمزنگاری‌شده ندارد.
 
 ## روند راه‌اندازی
 
@@ -396,3 +396,13 @@ GitHub Actions روی push به `main` و pull requestها، syntax check، Shel
 گزارش باگ و pull request از طریق [GitHub Issues](https://github.com/power0matin/backhaul-manager/issues) و [Pull Requests](https://github.com/power0matin/backhaul-manager/pulls) پذیرفته می‌شود. برای تغییر رفتاری بزرگ، بهتر است ابتدا issue ثبت کنید تا پیشنهاد با مدل config نسخه‌های پشتیبانی‌شده Backhaul تطبیق داده شود.
 
 مجوز این پروژه [MIT](./LICENSE) است. خود Backhaul پروژه‌ای جدا با source و مجوز مستقل است. برای معرفی کلی پروژه، [صفحه رسمی](https://matinshahabadi.ir/projects/backhaul-manager/) را ببینید.
+
+## ارتباط
+
+**Matin Shahabadi**
+
+- وب‌سایت: [matinshahabadi.ir](https://matinshahabadi.ir)
+- ایمیل: [me@matinshahabadi.ir](mailto:me@matinshahabadi.ir)
+- گیت‌هاب: [power0matin](https://github.com/power0matin)
+- لینکدین: [matin-shahabadi](https://www.linkedin.com/in/matin-shahabadi)
+
