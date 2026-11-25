@@ -257,13 +257,16 @@ link_test_cleanup
 new_env "$MUSIXAL_BACKHAUL_REPO"; link_test_write_client_config "$LINK_TEST_DIR/c.toml" wss 1.2.3.4:443 "$TOKEN"
 assert_not_contains "musixal client config has no tls_verify key" "$(<"$LINK_TEST_DIR/c.toml")" "tls_verify"
 link_test_cleanup
-exact_run ok wss 26500 26510 26511 46500
+test_base=$(link_test_pick_base_port) || fail "no free port block for WSS certificate test"
+exact_run ok wss "$test_base" "$((test_base + LINK_TEST_FWD_OFFSET))" "$((test_base + LINK_TEST_BEACON_OFFSET))" "$((test_base + LINK_TEST_ECHO_OFFSET))"
 assert_eq "wss temp certificate generated and accepted" PASS "$LT_X_VERDICT"
 link_test_cleanup
-exact_run ok wss 26520 26530 26531 46520 tlsfail
+test_base=$(link_test_pick_base_port) || fail "no free port block for WSS certificate-failure test"
+exact_run ok wss "$test_base" "$((test_base + LINK_TEST_FWD_OFFSET))" "$((test_base + LINK_TEST_BEACON_OFFSET))" "$((test_base + LINK_TEST_ECHO_OFFSET))" tlsfail
 assert_eq "TLS certificate failure classified" TLS_CERT "$LT_X_VERDICT"
 link_test_cleanup
-exact_run ok wss 26540 26550 26551 46540 tlsmismatch
+test_base=$(link_test_pick_base_port) || fail "no free port block for WSS TLS-mismatch test"
+exact_run ok wss "$test_base" "$((test_base + LINK_TEST_FWD_OFFSET))" "$((test_base + LINK_TEST_BEACON_OFFSET))" "$((test_base + LINK_TEST_ECHO_OFFSET))" tlsmismatch
 assert_eq "plain peer on a TLS port classified" TLS_MISMATCH "$LT_X_VERDICT"
 link_test_cleanup
 
